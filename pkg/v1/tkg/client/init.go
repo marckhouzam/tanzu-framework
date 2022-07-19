@@ -14,8 +14,16 @@ import (
 	"github.com/go-openapi/swag"
 	"github.com/juju/fslock"
 	"github.com/pkg/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
+	capav1beta1 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta1"
+	capzv1beta1 "sigs.k8s.io/cluster-api-provider-azure/api/v1beta1"
+	capvv1beta1 "sigs.k8s.io/cluster-api-provider-vsphere/apis/v1beta1"
+	capi "sigs.k8s.io/cluster-api/api/v1beta1"
+	bootstrapv1 "sigs.k8s.io/cluster-api/bootstrap/kubeadm/api/v1beta1"
 	clusterctlv1 "sigs.k8s.io/cluster-api/cmd/clusterctl/api/v1alpha3"
 	clusterctl "sigs.k8s.io/cluster-api/cmd/clusterctl/client"
+	controlplanev1 "sigs.k8s.io/cluster-api/controlplane/kubeadm/api/v1beta1"
 	crtclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/vmware-tanzu/tanzu-framework/pkg/v1/config"
@@ -415,6 +423,14 @@ func (c *TkgClient) PatchClusterInitOperations(regionalClusterClient clusterclie
 		return errors.Wrap(err, "unable to patch optional metadata under labels")
 	}
 
+	if config.IsFeatureActivated(config.FeatureFlagPackageBasedLCM) {
+		// Patch and remove kapp-controller labels from clusterclass resources
+		err = c.removeKappControllerLabelsFromClusterClassResources(regionalClusterClient)
+		if err != nil {
+			return errors.Wrap(err, "unable to patch optional metadata under labels")
+		}
+	}
+
 	return err
 }
 
@@ -767,4 +783,30 @@ func (c *TkgClient) safelyAddFeatureFlag(featureFlags map[string]string, feature
 		featureFlags = map[string]string{feature: value}
 	}
 	return featureFlags
+}
+
+// removeKappControllerLabelsFromClusterClassResources removes kapp-controller labels from clusterclass resources
+func (c *TkgClient) removeKappControllerLabelsFromClusterClassResources(regionalClusterClient clusterclient.Client) error {
+	errList := []error{}
+	labelsToBeDeleted := []string{"kapp.k14s.io/app", "kapp.k14s.io/association"}
+	gvkToResourcesMap := map[schema.GroupVersionKind]string{
+		capi.GroupVersion.WithKind("ClusterClass"):                          "clusterclasses",
+		controlplanev1.GroupVersion.WithKind("KubeadmControlPlaneTemplate"): "kubeadmcontrolplanetemplates",
+		bootstrapv1.GroupVersion.WithKind("KubeadmConfigTemplate"):          "kubeadmconfigtemplates",
+		capav1beta1.GroupVersion.WithKind("AWSClusterTemplate"):             "awsclustertemplates",
+		capav1beta1.GroupVersion.WithKind("AWSMachineTemplate"):             "awsmachinetemplates",
+		capzv1beta1.GroupVersion.WithKind("AzureClusterTemplate"):           "azureclustertemplates",
+		capzv1beta1.GroupVersion.WithKind("AzureMachineTemplate"):           "azuremachinetemplates",
+		capvv1beta1.GroupVersion.WithKind("VSphereClusterTemplate"):         "vsphereclustertemplates",
+		capvv1beta1.GroupVersion.WithKind("VSphereMachineTemplate"):         "vspheremachinetemplates",
+	}
+
+	for gvk, resourceName := range gvkToResourcesMap {
+		if exists, err := regionalClusterClient.VerifyExistenceOfCRD(resourceName, gvk.Group); err != nil || !exists {
+			continue
+		}
+		errList = append(errList, regionalClusterClient.RemoveMatchingLabelsFromResources(gvk, constants.TkgNamespace, labelsToBeDeleted))
+	}
+
+	return kerrors.NewAggregate(errList)
 }
