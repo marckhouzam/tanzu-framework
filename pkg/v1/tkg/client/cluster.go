@@ -4,6 +4,7 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/util/version"
 	clusterctlv1 "sigs.k8s.io/cluster-api/cmd/clusterctl/api/v1alpha3"
 	clusterctlclient "sigs.k8s.io/cluster-api/cmd/clusterctl/client"
@@ -19,12 +21,15 @@ import (
 	"sigs.k8s.io/cluster-api/cmd/clusterctl/client/repository"
 	addonsv1 "sigs.k8s.io/cluster-api/exp/addons/api/v1beta1"
 
+	kapppkgv1alpha1 "github.com/vmware-tanzu/carvel-kapp-controller/pkg/apiserver/apis/datapackaging/v1alpha1"
+	runtanzuv1alpha3 "github.com/vmware-tanzu/tanzu-framework/apis/run/v1alpha3"
 	"github.com/vmware-tanzu/tanzu-framework/pkg/v1/config"
 	"github.com/vmware-tanzu/tanzu-framework/pkg/v1/tkg/clusterclient"
 	"github.com/vmware-tanzu/tanzu-framework/pkg/v1/tkg/constants"
 	"github.com/vmware-tanzu/tanzu-framework/pkg/v1/tkg/log"
 	"github.com/vmware-tanzu/tanzu-framework/pkg/v1/tkg/tkgconfighelper"
 	"github.com/vmware-tanzu/tanzu-framework/pkg/v1/tkg/utils"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -57,6 +62,13 @@ type waitForAddonsOptions struct {
 	clusterName           string
 	namespace             string
 	waitForCNI            bool
+}
+
+var corePackages = map [string] bool{
+	"cni" : true,
+	"cpi" : true,
+	"csi" : true,
+	"kapp" : true,
 }
 
 // TKGSupportedClusterOptions is the comma separated list of cluster options that could be enabled by user
@@ -171,7 +183,7 @@ func (c *TkgClient) CreateCluster(options *CreateClusterOptions, waitForCluster 
 	}
 
 	log.Infof("Creating workload cluster '%s'...", options.ClusterName)
-	err = c.DoCreateCluster(regionalClusterClient, options.ClusterName, options.TargetNamespace, string(bytes))
+	//err = c.DoCreateCluster(regionalClusterClient, options.ClusterName, options.TargetNamespace, string(bytes))
 	if err != nil {
 		return false, errors.Wrap(err, "unable to create cluster")
 	}
@@ -212,6 +224,7 @@ func getContentFromInputFile(fileName string) ([]byte, error) {
 
 func (c *TkgClient) waitForClusterCreation(regionalClusterClient clusterclient.Client, options *CreateClusterOptions, isTKGSCluster bool) error {
 	log.Info("Waiting for cluster to be initialized...")
+	options.ClusterName="cc18"
 	kubeConfigBytes, err := c.WaitForClusterInitializedAndGetKubeConfig(regionalClusterClient, options.ClusterName, options.TargetNamespace)
 	if err != nil {
 		return errors.Wrap(err, "unable to wait for cluster and get the cluster kubeconfig")
@@ -242,7 +255,8 @@ func (c *TkgClient) waitForClusterCreation(regionalClusterClient clusterclient.C
 		return errors.Wrap(err, "unable to create workload cluster client")
 	}
 
-	if !isTKGSCluster {
+	/*
+	if options.IsInputFileClusterClassBased {
 		log.Info("Waiting for addons installation...")
 		if err := c.WaitForAddons(waitForAddonsOptions{
 			regionalClusterClient: regionalClusterClient,
@@ -257,9 +271,26 @@ func (c *TkgClient) waitForClusterCreation(regionalClusterClient clusterclient.C
 		if err := c.WaitForPackages(regionalClusterClient, workloadClusterClient, options.ClusterName, options.TargetNamespace, false); err != nil {
 			log.Warningf("Warning: Cluster is created successfully, but some packages are failing. %v", err)
 		}
+	}else{
+		
+
 	}
+	*/
+	log.Info("Waiting for addons installation...")
+		if err := c.WaitForAddonsCorePackagesInstallation(waitForAddonsOptions{
+			regionalClusterClient: regionalClusterClient,
+			workloadClusterClient: workloadClusterClient,
+			clusterName:           options.ClusterName,
+			namespace:             options.TargetNamespace,
+			waitForCNI:            true,
+		}); err != nil {
+			return errors.Wrap(err, "error waiting for addons to get installed")
+		}
 	return nil
 }
+
+
+
 
 func (c *TkgClient) getValueForAutoscalerDeploymentConfig() bool {
 	var autoscalerEnabled string
@@ -361,9 +392,11 @@ func (c *TkgClient) WaitForClusterReadyAfterReverseMove(clusterClient clustercli
 
 // WaitForAddons wait for addons to be installed
 func (c *TkgClient) WaitForAddons(options waitForAddonsOptions) error {
+	/*
 	if err := c.waitForCRS(options); err != nil {
 		return err
 	}
+	*/
 	if options.waitForCNI {
 		if err := c.waitForCNI(options); err != nil {
 			return err
@@ -404,7 +437,97 @@ func (c *TkgClient) waitForCRS(options waitForAddonsOptions) error {
 	if err != nil {
 		return errors.Wrap(err, "error waiting for ClusterResourceSet object to be applied for the cluster")
 	}
+	
 	return nil
+}
+
+// WaitForAddons wait for addons to be installed
+func (c *TkgClient) WaitForAddonsCorePackagesInstallation(options waitForAddonsOptions) error {
+	// get cluster bootstrap
+	// get core packages from clsuter boot strap
+	// monitor each package, first kaap controller
+	clusterBootstrap, err := GetClusterBootstrap(options.regionalClusterClient, options.clusterName, options.namespace)
+	packages := GetCorePackagesFromCB(clusterBootstrap, options.namespace)
+	err = MonitorAddonsCorePackageInstallation(options.regionalClusterClient, options.workloadClusterClient, packages)
+	return err
+}
+// WaitForAddonsDeployments wait for addons deployments
+func MonitorAddonsCorePackageInstallation(regionalClusterClient clusterclient.Client, workloadClusterClient clusterclient.Client, packages []kapppkgv1alpha1.Package) error {
+	group, _ := errgroup.WithContext(context.Background())
+	fmt.Println(group)
+	/*
+	for i, package := range packages {
+		packageName := package.objec
+	}
+	group.Go(
+		func() error {
+			err := clusterClient.WaitForDeployment(constants.TkrControllerDeploymentName, constants.TkrNamespace)
+			if err != nil {
+				log.V(3).Warningf("Failed waiting for deployment %s", constants.TkrControllerDeploymentName)
+			}
+			return err
+		})
+
+	group.Go(
+		func() error {
+			err := clusterClient.WaitForDeployment(constants.KappControllerDeploymentName, constants.KappControllerNamespace)
+			if err != nil {
+				log.V(3).Warningf("Failed waiting for deployment %s", constants.KappControllerDeploymentName)
+			}
+			return err
+		})
+
+	group.Go(
+		func() error {
+			err := clusterClient.WaitForDeployment(constants.AddonsManagerDeploymentName, constants.KappControllerNamespace)
+			if err != nil {
+				log.V(3).Warningf("Failed waiting for deployment %s", constants.AddonsManagerDeploymentName)
+			}
+			return err
+		})
+
+	err := group.Wait()
+	if err != nil {
+		return errors.Wrap(err, "Failed waiting for at least one CRS deployment, check logs for more detail.")
+	}
+	*/
+	return nil
+}
+func GetCorePackagesFromCB(clusterBootstrap *runtanzuv1alpha3.ClusterBootstrap, namespace string) []kapppkgv1alpha1.Package{
+	var packages []kapppkgv1alpha1.Package
+	if clusterBootstrap.Spec.Kapp != nil{
+		kappPkgShortName, kappPkgName, kappPkgVersion := getPackageDetailsFromCBS(clusterBootstrap.Spec.Kapp.RefName)
+		packages = append(packages, kapppkgv1alpha1.Package{ObjectMeta: metav1.ObjectMeta{Name: kappPkgShortName, Namespace: namespace},
+			Spec: kapppkgv1alpha1.PackageSpec{RefName: kappPkgName, Version: kappPkgVersion}})
+	}
+	if clusterBootstrap.Spec.CNI != nil{
+		kappPkgShortName, kappPkgName, kappPkgVersion := getPackageDetailsFromCBS(clusterBootstrap.Spec.CNI.RefName)
+		packages = append(packages, kapppkgv1alpha1.Package{ObjectMeta: metav1.ObjectMeta{Name: kappPkgShortName, Namespace: namespace},
+			Spec: kapppkgv1alpha1.PackageSpec{RefName: kappPkgName, Version: kappPkgVersion}})
+	}
+	if clusterBootstrap.Spec.CSI != nil{
+		kappPkgShortName, kappPkgName, kappPkgVersion := getPackageDetailsFromCBS(clusterBootstrap.Spec.CSI.RefName)
+		packages = append(packages, kapppkgv1alpha1.Package{ObjectMeta: metav1.ObjectMeta{Name: kappPkgShortName, Namespace: namespace},
+			Spec: kapppkgv1alpha1.PackageSpec{RefName: kappPkgName, Version: kappPkgVersion}})
+	}
+	if clusterBootstrap.Spec.CPI != nil{
+		kappPkgShortName, kappPkgName, kappPkgVersion := getPackageDetailsFromCBS(clusterBootstrap.Spec.CPI.RefName)
+		packages = append(packages, kapppkgv1alpha1.Package{ObjectMeta: metav1.ObjectMeta{Name: kappPkgShortName, Namespace: namespace},
+			Spec: kapppkgv1alpha1.PackageSpec{RefName: kappPkgName, Version: kappPkgVersion}})
+	}
+	
+	return packages
+}
+func getPackageDetailsFromCBS(CBSRefName string) (pkgShortName, pkgName, pkgVersion string) {
+	pkgShortName = strings.Split(CBSRefName, ".")[0]
+	pkgName = strings.Join(strings.Split(CBSRefName, ".")[0:4], ".")
+	pkgVersion = strings.Join(strings.Split(CBSRefName, ".")[4:], ".")
+	return
+}
+func  GetClusterBootstrap(client clusterclient.Client, clusterName, namespace string) (*runtanzuv1alpha3.ClusterBootstrap, error) {
+	clusterBootstrap := &runtanzuv1alpha3.ClusterBootstrap{}
+	err := client.GetResource(clusterBootstrap, clusterName, namespace,nil,&clusterclient.PollOptions{Interval: clusterclient.CheckResourceInterval, Timeout: clusterclient.PackageInstallTimeout})
+	return clusterBootstrap, err
 }
 
 func (c *TkgClient) createPacificCluster(options *CreateClusterOptions, waitForCluster bool) (err error) {
@@ -443,8 +566,13 @@ func (c *TkgClient) createPacificCluster(options *CreateClusterOptions, waitForC
 		return errors.Wrap(err, "unable to get cluster client")
 	}
 	// Apply the template(with variables subsitituted) to the supervisor cluster
+	/*
 	if err := clusterClient.Apply(string(configYaml)); err != nil {
 		return errors.Wrap(err, "failed to apply the cluster configuration")
+	}
+	*/
+	if configYaml!=nil{
+
 	}
 	// If user opts not to wait for the cluster to be provisioned, return
 	if !waitForCluster {
