@@ -59,13 +59,6 @@ type waitForAddonsOptions struct {
 	waitForCNI            bool
 }
 
-var corePackages = map [string] bool{
-	"cni" : true,
-	"cpi" : true,
-	"csi" : true,
-	"kapp" : true,
-}
-
 // TKGSupportedClusterOptions is the comma separated list of cluster options that could be enabled by user
 // !!!NOTE this is set during the build time.
 // Only the cluster options mentioned in "AllowedEnableOptions" could be enabled by user through command line option("enable-cluster-options"),
@@ -219,7 +212,7 @@ func getContentFromInputFile(fileName string) ([]byte, error) {
 
 func (c *TkgClient) waitForClusterCreation(regionalClusterClient clusterclient.Client, options *CreateClusterOptions, isTKGSCluster bool) error {
 	log.Info("Waiting for cluster to be initialized...")
-	options.ClusterName="cc18"
+	options.ClusterName = "cc18"
 	kubeConfigBytes, err := c.WaitForClusterInitializedAndGetKubeConfig(regionalClusterClient, options.ClusterName, options.TargetNamespace)
 	if err != nil {
 		return errors.Wrap(err, "unable to wait for cluster and get the cluster kubeconfig")
@@ -261,7 +254,7 @@ func (c *TkgClient) waitForClusterCreation(regionalClusterClient clusterclient.C
 		}); err != nil {
 			return errors.Wrap(err, "error waiting for addons to get installed")
 		}
-	}else{
+	} else {
 		log.Info("waiting for addons installation...")
 		if err := c.WaitForAddons(waitForAddonsOptions{
 			regionalClusterClient: regionalClusterClient,
@@ -423,7 +416,7 @@ func (c *TkgClient) waitForCRS(options waitForAddonsOptions) error {
 	if err != nil {
 		return errors.Wrap(err, "error waiting for ClusterResourceSet object to be applied for the cluster")
 	}
-	
+
 	return nil
 }
 
@@ -472,11 +465,11 @@ func (c *TkgClient) createPacificCluster(options *CreateClusterOptions, waitForC
 	}
 	// Apply the template(with variables subsitituted) to the supervisor cluster
 	/*
-	if err := clusterClient.Apply(string(configYaml)); err != nil {
-		return errors.Wrap(err, "failed to apply the cluster configuration")
-	}
+		if err := clusterClient.Apply(string(configYaml)); err != nil {
+			return errors.Wrap(err, "failed to apply the cluster configuration")
+		}
 	*/
-	if configYaml!=nil{
+	if configYaml != nil {
 
 	}
 	// If user opts not to wait for the cluster to be provisioned, return

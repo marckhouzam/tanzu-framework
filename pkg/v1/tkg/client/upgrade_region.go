@@ -378,7 +378,6 @@ func (c *TkgClient) WaitForAddonsDeployments(clusterClient clusterclient.Client)
 	return nil
 }
 
-
 // WaitForPackages wait for packages to be up and running
 func (c *TkgClient) WaitForPackages(regionalClusterClient, currentClusterClient clusterclient.Client, clusterName, namespace string, isRegionalCluster bool) error {
 	// Adding kapp-controller package to the exclude list
@@ -415,9 +414,8 @@ func (c *TkgClient) WaitForPackages(regionalClusterClient, currentClusterClient 
 			}
 		}
 	}
-	return WaitForPackagesInstallation(currentClusterClient,packageInstallNames,constants.TkgNamespace, c.getPackageInstallTimeoutFromConfig())
+	return WaitForPackagesInstallation(currentClusterClient, packageInstallNames, constants.TkgNamespace, c.getPackageInstallTimeoutFromConfig())
 }
-
 
 func (c *TkgClient) getPackageInstallTimeoutFromConfig() time.Duration {
 	var err error
