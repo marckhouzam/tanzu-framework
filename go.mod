@@ -6,6 +6,7 @@ replace (
 	github.com/vmware-tanzu/tanzu-framework/apis/cli => ./apis/cli
 	github.com/vmware-tanzu/tanzu-framework/apis/config => ./apis/config
 	github.com/vmware-tanzu/tanzu-framework/apis/run => ./apis/run
+	github.com/vmware-tanzu/tanzu-framework/cli/core => ./cli/core
 	github.com/vmware-tanzu/tanzu-framework/cli/runtime => ./cli/runtime
 	sigs.k8s.io/cluster-api => sigs.k8s.io/cluster-api v1.1.5
 	sigs.k8s.io/kind => sigs.k8s.io/kind v0.11.1
@@ -16,14 +17,13 @@ retract [v1.4.0-pre-alpha-1, v1.4.0-pre-alpha-2]
 
 require (
 	cloud.google.com/go/storage v1.18.2
-	github.com/AlecAivazis/survey/v2 v2.3.5
 	github.com/Azure/azure-sdk-for-go v66.0.0+incompatible
 	github.com/Azure/go-autorest/autorest v0.11.23
 	github.com/Azure/go-autorest/autorest/azure/auth v0.5.10
 	github.com/Jeffail/gabs v1.4.0
 	github.com/MakeNowJust/heredoc v1.0.0
 	github.com/Masterminds/semver v1.5.0
-	github.com/adrg/xdg v0.2.1
+	github.com/adrg/xdg v0.4.0
 	github.com/apparentlymart/go-cidr v1.1.0
 	github.com/aunum/log v0.0.0-20200821225356-38d2e2c8b489
 	github.com/avinetworks/sdk v0.0.0-20201123134013-c157ef55b6f7
@@ -53,7 +53,6 @@ require (
 	github.com/google/go-containerregistry v0.7.0
 	github.com/google/uuid v1.3.0
 	github.com/googleapis/gnostic v0.5.5
-	github.com/gorilla/mux v1.8.0
 	github.com/gorilla/websocket v1.5.0
 	github.com/gosuri/uitable v0.0.4
 	github.com/grpc-ecosystem/go-grpc-middleware v1.3.0
@@ -65,8 +64,6 @@ require (
 	github.com/k14s/imgpkg v0.17.0
 	github.com/k14s/kbld v0.32.0
 	github.com/k14s/semver/v4 v4.0.1-0.20210701191048-266d47ac6115
-	github.com/lithammer/dedent v1.1.0
-	github.com/logrusorgru/aurora v2.0.3+incompatible
 	github.com/mattn/go-isatty v0.0.16
 	github.com/onsi/ginkgo v1.16.5
 	github.com/onsi/ginkgo/v2 v2.1.3
@@ -92,6 +89,7 @@ require (
 	github.com/vmware-tanzu/tanzu-framework/apis/cli v0.0.0-00010101000000-000000000000
 	github.com/vmware-tanzu/tanzu-framework/apis/config v0.0.0-00010101000000-000000000000
 	github.com/vmware-tanzu/tanzu-framework/apis/run v0.0.0-00010101000000-000000000000
+	github.com/vmware-tanzu/tanzu-framework/cli/core v0.0.0-00010101000000-000000000000
 	github.com/vmware-tanzu/tanzu-framework/cli/runtime v0.0.0-00010101000000-000000000000
 	github.com/vmware/govmomi v0.27.1
 	github.com/yalp/jsonpath v0.0.0-20180802001716-5cc68e5049a0
@@ -127,6 +125,7 @@ require (
 
 require (
 	cloud.google.com/go v0.99.0 // indirect
+	github.com/AlecAivazis/survey/v2 v2.3.5 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20210617225240-d185dfc1b5a1 // indirect
 	github.com/Azure/go-autorest v14.2.0+incompatible // indirect
 	github.com/Azure/go-autorest/autorest/adal v0.9.18 // indirect
@@ -137,7 +136,7 @@ require (
 	github.com/Azure/go-autorest/logger v0.2.1 // indirect
 	github.com/Azure/go-autorest/tracing v0.6.0 // indirect
 	github.com/Azure/go-ntlmssp v0.0.0-20200615164410-66371956d46c // indirect
-	github.com/BurntSushi/toml v1.0.0 // indirect
+	github.com/BurntSushi/toml v1.1.0 // indirect
 	github.com/Masterminds/goutils v1.1.1 // indirect
 	github.com/Masterminds/semver/v3 v3.1.1 // indirect
 	github.com/Masterminds/sprig/v3 v3.2.2 // indirect
@@ -203,6 +202,8 @@ require (
 	github.com/k14s/starlark-go v0.0.0-20200720175618-3a5c849cc368 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
 	github.com/klauspost/compress v1.13.6 // indirect
+	github.com/lithammer/dedent v1.1.0 // indirect
+	github.com/logrusorgru/aurora v2.0.3+incompatible // indirect
 	github.com/magiconair/properties v1.8.5 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-colorable v0.1.12 // indirect

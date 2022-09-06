@@ -6,8 +6,6 @@ package helper
 import (
 	"fmt"
 	"os"
-
-	"github.com/vmware-tanzu/tanzu-framework/pkg/v1/tkg/constants"
 )
 
 // GetFakeKubeConfigFilePath returns fake kubeconfig file path
@@ -25,7 +23,7 @@ func copyFile(sourceFile, destFile string) {
 	if err != nil {
 		fmt.Println("Error ReadFile TempFile: ", err.Error())
 	}
-	_ = os.WriteFile(destFile, input, constants.ConfigFilePermissions)
+	_ = os.WriteFile(destFile, input, 0o600)
 	if err != nil {
 		fmt.Println("Error WriteFile TempFile: ", err.Error())
 	}
