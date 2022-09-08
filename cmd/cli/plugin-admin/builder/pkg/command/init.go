@@ -10,7 +10,7 @@ import (
 
 	"github.com/aunum/log"
 
-	"github.com/vmware-tanzu/tanzu-framework/cmd/cli/plugin-admin/builder/pkg/template"
+	"github.com/vmware-tanzu/tanzu-framework/plugin-admin/builder/pkg/template"
 )
 
 const (

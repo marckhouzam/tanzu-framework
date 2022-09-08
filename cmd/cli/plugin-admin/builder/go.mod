@@ -1,4 +1,4 @@
-module github.com/vmware-tanzu/tanzu-framework/cmd/cli/plugin-admin/builder
+module github.com/vmware-tanzu/tanzu-framework/plugin-admin/builder
 
 go 1.17
 

@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/vmware-tanzu/tanzu-framework/cli/runtime/component"
-	"github.com/vmware-tanzu/tanzu-framework/cmd/cli/plugin-admin/builder/pkg/command"
+	"github.com/vmware-tanzu/tanzu-framework/plugin-admin/builder/pkg/command"
 )
 
 const desc = `Initialize a new plugin repository with scaffolding for:

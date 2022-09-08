@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/vmware-tanzu/tanzu-framework/cli/core/pkg/common"
-	"github.com/vmware-tanzu/tanzu-framework/cmd/cli/plugin-admin/builder/pkg/command"
+	"github.com/vmware-tanzu/tanzu-framework/plugin-admin/builder/pkg/command"
 )
 
 var publishArgs = &command.PublishArgs{
