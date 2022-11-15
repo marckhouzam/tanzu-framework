@@ -45,6 +45,9 @@ func GetTKGPackageConfigValuesFileFromUserConfig(managementPackageVersion string
 		return "", errors.Errorf("unknown provider type %q", providerType)
 	}
 
+	// get cacert cal from user input for tkr-controller-config cm
+	caCerts, imageRepo := getCaCertAndImageRepoFromUserProviderConfigValues(userProviderConfigValues, tkgBomConfig)
+
 	tkgPackageConfig := TKGPackageConfig{
 		Metadata: Metadata{
 			InfraProvider: userProviderConfigValues[constants.ConfigVariableProviderType].(string),
@@ -88,12 +91,16 @@ func GetTKGPackageConfigValuesFileFromUserConfig(managementPackageVersion string
 				BomMetadataImagePath: fmt.Sprintf("%s/%s", tkgBomConfig.ImageConfig.ImageRepository, tkgBomConfig.TKRCompatibility.ImagePath),
 				TKRRepoImagePath:     tkrRepoImagePath,
 				DefaultCompatibleTKR: tkgBomConfig.Default.TKRVersion,
+				CaCerts:              caCerts,
+				ImageRepo:            imageRepo,
 			},
 		},
 		CoreManagementPluginsPackage: CoreManagementPluginsPackage{
 			VersionConstraints: managementPackageVersion,
 		},
 	}
+
+	setProxyConfiguration(&tkgPackageConfig, userProviderConfigValues)
 
 	configBytes, err := yaml.Marshal(tkgPackageConfig)
 	if err != nil {
@@ -106,4 +113,50 @@ func GetTKGPackageConfigValuesFileFromUserConfig(managementPackageVersion string
 		return "", err
 	}
 	return valuesFile, nil
+}
+
+func setProxyConfiguration(tkgPackageConfig *TKGPackageConfig, userProviderConfigValues map[string]interface{}) {
+	var (
+		httpProxy  string
+		httpsProxy string
+		noProxy    string
+	)
+
+	if p, ok := userProviderConfigValues[constants.TKGHTTPProxy]; ok {
+		httpProxy = p.(string)
+	}
+	if p, ok := userProviderConfigValues[constants.TKGHTTPSProxy]; ok {
+		httpsProxy = p.(string)
+	}
+	if p, ok := userProviderConfigValues[constants.TKGNoProxy]; ok {
+		noProxy = p.(string)
+	}
+
+	setProxyInTKRSourceControllerPackage(tkgPackageConfig, httpProxy, httpsProxy, noProxy)
+}
+
+func setProxyInTKRSourceControllerPackage(tkgPackageConfig *TKGPackageConfig, httpProxy, httpsProxy, noProxy string) {
+	tkgPackageConfig.TKRSourceControllerPackage.TKRSourceControllerPackageValues.Deployment =
+		TKRSourceControllerPackageValuesDeployment{
+			HttpProxy:  httpProxy,
+			HttpsProxy: httpsProxy,
+			NoProxy:    noProxy,
+		}
+}
+
+func getCaCertAndImageRepoFromUserProviderConfigValues(userProviderConfigValues map[string]interface{}, bomConfig *tkgconfigbom.BOMConfiguration) (string, string) {
+	caCert := ""
+	imageRepo := bomConfig.ImageConfig.ImageRepository
+	// implement the same logic as legacy func tkg_image_repo_ca_cert() in providers/ytt/lib/helpers.star
+	if val, ok := userProviderConfigValues[constants.TKGProxyCACert]; ok {
+		caCert = val.(string)
+	} else if val, ok := userProviderConfigValues[constants.ConfigVariableCustomImageRepositoryCaCertificate]; ok {
+		caCert = val.(string)
+	}
+
+	// implement the same logic as legacy func tkg_image_repo() in providers/ytt/lib/helpers.star
+	if val, ok := userProviderConfigValues[constants.ConfigVariableCustomImageRepository]; ok {
+		imageRepo = val.(string)
+	}
+	return caCert, imageRepo
 }

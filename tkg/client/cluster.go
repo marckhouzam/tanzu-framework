@@ -4,15 +4,21 @@
 package client
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/pkg/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/version"
+	capi "sigs.k8s.io/cluster-api/api/v1beta1"
 	clusterctlv1 "sigs.k8s.io/cluster-api/cmd/clusterctl/api/v1alpha3"
 	clusterctlclient "sigs.k8s.io/cluster-api/cmd/clusterctl/client"
 	"sigs.k8s.io/cluster-api/cmd/clusterctl/client/cluster"
@@ -25,6 +31,7 @@ import (
 	"github.com/vmware-tanzu/tanzu-framework/tkg/log"
 	"github.com/vmware-tanzu/tanzu-framework/tkg/tkgconfighelper"
 	"github.com/vmware-tanzu/tanzu-framework/tkg/utils"
+	"github.com/vmware-tanzu/tanzu-framework/util/topology"
 )
 
 const (
@@ -95,7 +102,7 @@ func (c *TkgClient) CreateCluster(options *CreateClusterOptions, waitForCluster 
 		GetClientTimeout:  3 * time.Second,
 		OperationTimeout:  c.timeout,
 	}
-	regionalClusterClient, err := clusterclient.NewClient(options.Kubeconfig.Path, options.Kubeconfig.Context, clusterclientOptions)
+	regionalClusterClient, err := c.clusterClientFactory.NewClient(options.Kubeconfig.Path, options.Kubeconfig.Context, clusterclientOptions)
 	if err != nil {
 		return false, errors.Wrap(err, "unable to get cluster client while creating cluster")
 	}
@@ -141,13 +148,18 @@ func (c *TkgClient) CreateCluster(options *CreateClusterOptions, waitForCluster 
 		if err != nil {
 			return false, errors.Wrap(err, "unable to get cluster configuration")
 		}
+
+		err = validateConfigForSingleNodeCluster(bytes, options, c)
+		if err != nil {
+			return false, err
+		}
 	} else {
 		bytes, err = c.getClusterConfigurationBytes(&options.ClusterConfigOptions, infraProviderName, isManagementCluster, options.IsWindowsWorkloadCluster)
 		if err != nil {
 			return false, errors.Wrap(err, "unable to get cluster configuration")
 		}
 
-		if config.IsFeatureActivated(config.FeatureFlagPackageBasedLCM) {
+		if config.IsFeatureActivated(constants.FeatureFlagPackageBasedLCM) {
 			clusterConfigDir, err := c.tkgConfigPathsClient.GetClusterConfigurationDirectory()
 			if err != nil {
 				return false, err
@@ -162,11 +174,22 @@ func (c *TkgClient) CreateCluster(options *CreateClusterOptions, waitForCluster 
 
 			// If `features.cluster.auto-apply-generated-clusterclass-based-configuration` feature-flag is not activated
 			// log command to use to create cluster using ClusterClass based config file and return
-			if !config.IsFeatureActivated(config.FeatureFlagAutoApplyGeneratedClusterClassBasedConfiguration) {
+			if !config.IsFeatureActivated(constants.FeatureFlagAutoApplyGeneratedClusterClassBasedConfiguration) {
 				log.Warningf("\nTo create a cluster with it, use")
 				log.Warningf("    tanzu cluster create --file %v", configFilePath)
 				return false, nil
 			}
+
+			// if both FeatureFlagPackageBasedLCM and FeatureFlagAutoApplyGeneratedClusterClassBasedConfiguration enabled
+			// customization ytt overlay will cause create legacy cluster
+			iscustomoverlaypresent, err := c.isCustomOverlayPresent()
+			if err != nil {
+				return false, errors.Wrap(err, "fail to get iscustomoverlaypresent")
+			}
+			if iscustomoverlaypresent && !isManagementCluster {
+				log.Warning(constants.YTTBasedClusterWarning)
+			}
+
 			log.Warningf("\nUsing this new Cluster configuration '%v' to create the cluster.\n", configFilePath)
 		}
 	}
@@ -236,16 +259,17 @@ func (c *TkgClient) waitForClusterCreation(regionalClusterClient clusterclient.C
 		return errors.Wrap(err, "unable to wait for cluster nodes to be available")
 	}
 
-	c.WaitForAutoscalerDeployment(regionalClusterClient, options.ClusterName, options.TargetNamespace)
+	isClusterClassBased, err := regionalClusterClient.IsClusterClassBased(options.ClusterName, options.TargetNamespace)
+	if err != nil {
+		return errors.Wrap(err, "error while checking workload cluster type")
+	}
+
+	c.WaitForAutoscalerDeployment(regionalClusterClient, options.ClusterName, options.TargetNamespace, isClusterClassBased)
 	workloadClusterClient, err := clusterclient.NewClient(workloadClusterKubeconfigPath, kubeContext, clusterclient.Options{OperationTimeout: 15 * time.Minute})
 	if err != nil {
 		return errors.Wrap(err, "unable to create workload cluster client")
 	}
 
-	isClusterClassBased, err := regionalClusterClient.IsClusterClassBased(options.ClusterName, options.TargetNamespace)
-	if err != nil {
-		return errors.Wrap(err, "error while checking workload cluster type")
-	}
 	isTKGSCluster, err := regionalClusterClient.IsPacificRegionalCluster()
 	if err != nil {
 		return err
@@ -300,10 +324,21 @@ func (c *TkgClient) getValueForAutoscalerDeploymentConfig() bool {
 }
 
 // WaitForAutoscalerDeployment waits for autoscaler deployment if enabled
-func (c *TkgClient) WaitForAutoscalerDeployment(regionalClusterClient clusterclient.Client, clusterName, targetNamespace string) {
-	if isEnabled := c.getValueForAutoscalerDeploymentConfig(); isEnabled {
+func (c *TkgClient) WaitForAutoscalerDeployment(regionalClusterClient clusterclient.Client, clusterName, targetNamespace string, isClusterClassBased bool) {
+	isEnabled := false
+	autoscalerDeploymentName := clusterName + constants.AutoscalerDeploymentNameSuffix
+	if isClusterClassBased {
+		autoscalerDeployment, err := regionalClusterClient.GetDeployment(autoscalerDeploymentName, targetNamespace)
+		if autoscalerDeployment.Name == "" || err != nil {
+			log.Warning("unable to get the autoscaler deployment, maybe it is not exist")
+			return
+		}
+		isEnabled = true
+	} else {
+		isEnabled = c.getValueForAutoscalerDeploymentConfig()
+	}
+	if isEnabled {
 		log.Warning("Waiting for cluster autoscaler to be available...")
-		autoscalerDeploymentName := clusterName + "-cluster-autoscaler"
 		if err := regionalClusterClient.WaitForAutoscalerDeployment(autoscalerDeploymentName, targetNamespace); err != nil {
 			log.Warningf("Unable to wait for autoscaler deployment to be ready. reason: %v", err)
 		}
@@ -703,10 +738,11 @@ func (c *TkgClient) ConfigureAndValidateWorkloadClusterConfiguration(options *Cr
 
 // ValidateProviderConfig configure and validate based on provider
 func (c *TkgClient) configureAndValidateProviderConfig(providerName string, options *CreateClusterOptions, clusterClient clusterclient.Client, skipValidation bool) error {
+	isProdPlan := IsProdPlan(options.ClusterConfigOptions.ProviderRepositorySource.Flavor)
 	switch providerName {
 	case AWSProviderName:
 		if err := c.ConfigureAndValidateAWSConfig(options.TKRVersion, options.NodeSizeOptions, skipValidation,
-			options.ClusterConfigOptions.ProviderRepositorySource.Flavor == constants.PlanProd, *options.WorkerMachineCount, clusterClient, false); err != nil {
+			isProdPlan, *options.WorkerMachineCount, clusterClient, false); err != nil {
 			return errors.Wrap(err, "AWS config validation failed")
 		}
 	case VSphereProviderName:
@@ -717,8 +753,7 @@ func (c *TkgClient) configureAndValidateProviderConfig(providerName string, opti
 			return NewValidationError(ValidationErrorCode, errors.Wrap(err, "vSphere control plane endpoint IP validation failed").Error())
 		}
 	case AzureProviderName:
-		if err := c.ConfigureAndValidateAzureConfig(options.TKRVersion, options.NodeSizeOptions, skipValidation,
-			options.ClusterConfigOptions.ProviderRepositorySource.Flavor == constants.PlanProd, *options.WorkerMachineCount, nil, false); err != nil {
+		if err := c.ConfigureAndValidateAzureConfig(options.TKRVersion, options.NodeSizeOptions, skipValidation, nil); err != nil {
 			return errors.Wrap(err, "Azure config validation failed")
 		}
 	case DockerProviderName:
@@ -726,6 +761,13 @@ func (c *TkgClient) configureAndValidateProviderConfig(providerName string, opti
 			return NewValidationError(ValidationErrorCode, err.Error())
 		}
 	}
+
+	workerCounts, err := c.DistributeMachineDeploymentWorkers(*options.WorkerMachineCount, isProdPlan, false, providerName, false)
+	if err != nil {
+		return errors.Wrap(err, "failed to distribute machine deployments")
+	}
+	c.SetMachineDeploymentWorkerCounts(workerCounts, *options.WorkerMachineCount, isProdPlan)
+
 	return nil
 }
 
@@ -842,4 +884,64 @@ func (c *TkgClient) ValidateManagementClusterVersionWithCLI(regionalClusterClien
 	}
 
 	return nil
+}
+
+// validateConfigForSingleNodeCluster validates that the controlPlaneTaint CC variable is not set for the single node workload cluster, otherwise returns error
+func validateConfigForSingleNodeCluster(stream []byte, options *CreateClusterOptions, tkgClient *TkgClient) error {
+	cluster, err := getClusterObjectFromYaml(stream)
+	if err != nil {
+		return err
+	}
+
+	if !topology.IsSingleNodeCluster(cluster) {
+		return nil
+	}
+
+	controlPlaneTaint := true
+	err = topology.GetVariable(cluster, "controlPlaneTaint", &controlPlaneTaint)
+	if err != nil {
+		return errors.Wrap(err, "failed to get CC variable controlPlaneTaint")
+	}
+
+	// Do not allow the creation of single node clusters without the feature gate.
+	if !tkgClient.IsFeatureActivated(constants.FeatureFlagSingleNodeClusters) {
+		return errors.New("Worker count cannot be 0, minimum worker count required is 1")
+	}
+
+	if controlPlaneTaint {
+		return errors.New(fmt.Sprintf("unable to create single node cluster %s as control plane node has taint", options.ClusterName))
+	}
+
+	return nil
+}
+
+func getClusterObjectFromYaml(stream []byte) (*capi.Cluster, error) {
+	clusterYaml, err := findClusterDefinitionIn(stream)
+	if err != nil {
+		return nil, err
+	}
+
+	cluster := &capi.Cluster{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(clusterYaml, cluster)
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to convert yaml to structured format")
+	}
+	return cluster, nil
+}
+
+func findClusterDefinitionIn(stream []byte) (map[string]interface{}, error) {
+	clusterYaml := make(map[string]interface{})
+	decoder := yaml.NewDecoder(bytes.NewBufferString(string(stream)))
+	for {
+		if err := decoder.Decode(&clusterYaml); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return clusterYaml, errors.Wrap(err, "unable to read cluster yaml")
+		}
+		if clusterYaml["kind"] == constants.KindCluster {
+			break
+		}
+	}
+	return clusterYaml, nil
 }

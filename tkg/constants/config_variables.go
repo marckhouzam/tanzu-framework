@@ -167,6 +167,7 @@ const (
 	ConfigVaraibleDisableCRSForAddonType     = "DISABLE_CRS_FOR_ADDON_TYPE"
 	ConfigVariableEnableAutoscaler           = "ENABLE_AUTOSCALER"
 	ConfigVariableDisableTMCCloudPermissions = "DISABLE_TMC_CLOUD_PERMISSIONS"
+	AutoscalerDeploymentNameSuffix           = "-cluster-autoscaler"
 
 	ConfigVariableControlPlaneMachineCount = "CONTROL_PLANE_MACHINE_COUNT"
 	ConfigVariableControlPlaneMachineType  = "CONTROL_PLANE_MACHINE_TYPE"
@@ -238,6 +239,7 @@ const (
 	ConfigVariableInternalCAPAManagerImageTag     = "CAPA_CONTROLLER_IMAGE_TAG"
 	ConfigVariableInternalCAPVManagerImageTag     = "CAPV_CONTROLLER_IMAGE_TAG"
 	ConfigVariableInternalCAPZManagerImageTag     = "CAPZ_CONTROLLER_IMAGE_TAG"
+	ConfigVariableInternalCAPOCIManagerImageTag   = "CAPOCI_CONTROLLER_IMAGE_TAG"
 	ConfigVariableInternalNMIImageTag             = "NMI_IMAGE_TAG"
 
 	// Other variables related to provider installation

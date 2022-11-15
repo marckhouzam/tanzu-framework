@@ -42,7 +42,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	capav1beta1 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta1"
+	capav1beta2 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta2"
 	capzv1beta1 "sigs.k8s.io/cluster-api-provider-azure/api/v1beta1"
 	capvv1beta1 "sigs.k8s.io/cluster-api-provider-vsphere/apis/v1beta1"
 	capiv1alpha3 "sigs.k8s.io/cluster-api/api/v1alpha3"
@@ -52,6 +52,7 @@ import (
 	"sigs.k8s.io/cluster-api/cmd/clusterctl/client/cluster"
 	controlplanev1 "sigs.k8s.io/cluster-api/controlplane/kubeadm/api/v1beta1"
 	addonsv1 "sigs.k8s.io/cluster-api/exp/addons/api/v1beta1"
+	capiexp "sigs.k8s.io/cluster-api/exp/api/v1beta1"
 	capdv1 "sigs.k8s.io/cluster-api/test/infrastructure/docker/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	containerutil "sigs.k8s.io/cluster-api/util/container"
@@ -60,6 +61,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
 	tkgsv1alpha2 "github.com/vmware-tanzu/tanzu-framework/apis/run/v1alpha2"
+	"github.com/vmware-tanzu/tanzu-framework/apis/run/v1alpha3"
 
 	kappipkg "github.com/vmware-tanzu/carvel-kapp-controller/pkg/apis/packaging/v1alpha1"
 
@@ -69,6 +71,7 @@ import (
 	runv1alpha1 "github.com/vmware-tanzu/tanzu-framework/apis/run/v1alpha1"
 	runv1alpha3 "github.com/vmware-tanzu/tanzu-framework/apis/run/v1alpha3"
 	capdiscovery "github.com/vmware-tanzu/tanzu-framework/capabilities/client/pkg/discovery"
+	"github.com/vmware-tanzu/tanzu-framework/cli/runtime/config"
 	tmcv1alpha1 "github.com/vmware-tanzu/tanzu-framework/tkg/api/tmc/v1alpha1"
 	azureclient "github.com/vmware-tanzu/tanzu-framework/tkg/azure"
 	"github.com/vmware-tanzu/tanzu-framework/tkg/buildinfo"
@@ -83,8 +86,9 @@ import (
 )
 
 const (
-	kubectlApplyRetryTimeout  = 30 * time.Second
-	kubectlApplyRetryInterval = 5 * time.Second
+	kubectlApplyRetryTimeout          = 30 * time.Second
+	kubectlApplyRetryInterval         = 5 * time.Second
+	kubectlApplyLastAppliedAnnotation = "kubectl.kubernetes.io/last-applied-configuration"
 	// DefaultKappControllerHostPort is the default kapp-controller port for it's extension apiserver
 	DefaultKappControllerHostPort           = 10100
 	waitPeriodBeforePollingForUpgradeStatus = 60 * time.Second
@@ -111,10 +115,14 @@ type Client interface {
 
 	// Apply applies a yaml string to a cluster
 	Apply(string) error
-	// Apply configuration to a cluster by filename
+	// ApplyFile runs kubectl apply on a file/url every `interval` until it succeeds or a timeout is reached.
 	ApplyFile(string) error
+	// ApplyFileRecursively runs kubectl apply recursively in certain namespace on a dir/url every `interval` until it succeeds or a timeout is reached.
+	ApplyFileRecursively(string, string) error
 	// WaitForClusterInitialized waits for a cluster to be initialized so the kubeconfig file can be fetched
 	WaitForClusterInitialized(clusterName string, namespace string) error
+	// WaitForControlPlaneAvailable wait for cluster API server is ready to receive requests
+	WaitForControlPlaneAvailable(clusterName string, namespace string) error
 	// WaitForClusterReady for a cluster to be fully provisioned and so ready to be moved
 	// If checkReplicas is true, will also ensure that the number of ready
 	// replicas matches the expected number in the cluster's spec
@@ -125,6 +133,8 @@ type Client interface {
 	WaitForDeployment(deploymentName string, namespace string) error
 	// WaitForAutoscalerDeployment waits for the autoscaler deployment to be available
 	WaitForAutoscalerDeployment(deploymentName string, namespace string) error
+	// ApplyPatchForAutoScalerDeployment update autoscaler by patch image
+	ApplyPatchForAutoScalerDeployment(tkgBomClient tkgconfigbom.Client, clusterName string, k8sVersion string, namespace string) error
 	// WaitForAVIResourceCleanUp waits for the avi resource clean up finished
 	WaitForAVIResourceCleanUp(statefulSetName, namespace string) error
 	// WaitForPackageInstall waits for the package to be installed successfully
@@ -209,6 +219,8 @@ type Client interface {
 	DeleteCluster(clusterName string, namespace string) error
 	// GetKubernetesVersion gets kubernetes server version for a given cluster
 	GetKubernetesVersion() (string, error)
+	// GetDeployment gets deployment object in the specified namespace
+	GetDeployment(deploymentName string, namespace string) (appsv1.Deployment, error)
 	// GetMDObjectForCluster gets machine deployment object of worker nodes for cluster
 	GetMDObjectForCluster(clusterName string, namespace string) ([]capi.MachineDeployment, error)
 	// GetClusterControlPlaneNodeObject gets cluster control plane node for cluster
@@ -235,7 +247,7 @@ type Client interface {
 	// CloneWithTimeout returns a new client with the same attributes of the current one except for get client timeout settings
 	CloneWithTimeout(getClientTimeout time.Duration) Client
 	// GetVCClientAndDataCenter returns vsphere client and datacenter name by reading on cluster resources
-	GetVCClientAndDataCenter(clusterName, clusterNamespace, vsphereMachineTemplateObjectName string) (vc.Client, string, error)
+	GetVCClientAndDataCenter(clusterName, clusterNamespace, vsphereMachineTemplateObjectName string, vcClientFactory vc.VcClientFactory) (vc.Client, string, error)
 	// PatchK8SVersionToPacificCluster patches the Pacific TKC object to update the k8s version on the cluster
 	PatchK8SVersionToPacificCluster(clusterName, namespace string, kubernetesVersion string) error
 	// WaitForPacificClusterK8sVersionUpdate waits for the Pacific TKC cluster to update k8s version
@@ -319,6 +331,10 @@ type Client interface {
 	GetTanzuKubernetesReleases(tkrName string) ([]runv1alpha1.TanzuKubernetesRelease, error)
 	// GetBomConfigMap returns configmap associated w3ith the tkrNameLabel
 	GetBomConfigMap(tkrNameLabel string) (corev1.ConfigMap, error)
+	// GetClusterResolvedTanzuKubernetesRelease gets the resolved TKR for the management cluster
+	GetClusterResolvedTanzuKubernetesRelease() (*runv1alpha3.TanzuKubernetesRelease, error)
+	// GetClusterResolvedOSImagesFromTKR get a list of OSImage resource from the resolved TKR
+	GetClusterResolvedOSImagesFromTKR(*runv1alpha3.TanzuKubernetesRelease) ([]*runv1alpha3.OSImage, error)
 	// GetClusterInfrastructure gets cluster infrastructure name like VSphereCluster, AWSCluster, AzureCluster
 	GetClusterInfrastructure() (string, error)
 	// ActivateTanzuKubernetesReleases activates TanzuKubernetesRelease
@@ -395,6 +411,8 @@ type client struct {
 
 // constants regarding timeout and configs
 const (
+	upgradePatchInterval              = 30 * time.Second
+	upgradePatchTimeout               = 5 * time.Minute
 	operationDefaultTimeout           = 30 * time.Minute
 	CheckResourceInterval             = 5 * time.Second
 	CheckClusterInterval              = 10 * time.Second
@@ -435,6 +453,7 @@ var (
 
 func init() {
 	_ = capi.AddToScheme(scheme)
+	_ = capiexp.AddToScheme(scheme)
 	_ = capiv1alpha3.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
@@ -442,7 +461,7 @@ func init() {
 	_ = controlplanev1.AddToScheme(scheme)
 	_ = tkgsv1alpha2.AddToScheme(scheme)
 	_ = capvv1beta1.AddToScheme(scheme)
-	_ = capav1beta1.AddToScheme(scheme)
+	_ = capav1beta2.AddToScheme(scheme)
 	_ = capzv1beta1.AddToScheme(scheme)
 	_ = capdv1.AddToScheme(scheme)
 	_ = bootstrapv1.AddToScheme(scheme)
@@ -516,10 +535,18 @@ func (c *client) Apply(yamlStr string) error {
 	return err
 }
 
-// Apply runs kubectl apply on a file/url every `interval` until it succeeds or a timeout is reached.
+// ApplyFile runs kubectl apply on a file/url every `interval` until it succeeds or a timeout is reached.
 func (c *client) ApplyFile(filePath string) error {
 	_, err := c.poller.PollImmediateWithGetter(kubectlApplyRetryInterval, kubectlApplyRetryTimeout, func() (interface{}, error) {
 		return nil, c.kubectlApplyFile(filePath)
+	})
+	return err
+}
+
+// ApplyFileRecursively runs kubectl apply recursively on a dir/url every `interval` until it succeeds or a timeout is reached.
+func (c *client) ApplyFileRecursively(filePath, namespace string) error {
+	_, err := c.poller.PollImmediateWithGetter(kubectlApplyRetryInterval, kubectlApplyRetryTimeout, func() (interface{}, error) {
+		return nil, c.kubectlApplyFileRecursively(filePath, namespace)
 	})
 	return err
 }
@@ -601,6 +628,21 @@ func (c *client) WaitForClusterInitialized(clusterName, namespace string) error 
 	return c.poller.PollImmediateInfiniteWithGetter(interval, getterFunc)
 }
 
+func (c *client) WaitForControlPlaneAvailable(clusterName, namespace string) error {
+	_, err := c.poller.PollImmediateWithGetter(CheckClusterInterval, c.operationTimeout, func() (interface{}, error) {
+		kcpObject, err := c.GetKCPObjectForCluster(clusterName, namespace)
+		if err != nil {
+			return false, err
+		}
+		if conditions.IsTrue(kcpObject, controlplanev1.AvailableCondition) {
+			return true, nil
+		}
+
+		return false, errors.New("control plane is not available yet")
+	})
+	return err
+}
+
 func (c *client) WaitForClusterReady(clusterName, namespace string, checkAllReplicas bool) error {
 	if err := c.GetResource(&capi.Cluster{}, clusterName, namespace, VerifyClusterReady, &PollOptions{Interval: CheckClusterInterval, Timeout: c.operationTimeout}); err != nil {
 		return err
@@ -666,6 +708,47 @@ func (c *client) WaitForAutoscalerDeployment(deploymentName, namespace string) e
 	return c.GetResource(&appsv1.Deployment{}, deploymentName, namespace, VerifyAutoscalerDeploymentAvailable, &PollOptions{Interval: CheckResourceInterval, Timeout: CheckAutoscalerDeploymentTimeout})
 }
 
+func (c *client) ApplyPatchForAutoScalerDeployment(tkgBomClient tkgconfigbom.Client, clusterName string, k8sVersion string, namespace string) error {
+	var autoScalerDeployment appsv1.Deployment
+	autoscalerDeploymentName := clusterName + "-cluster-autoscaler"
+	err := c.GetResource(&autoScalerDeployment, autoscalerDeploymentName, namespace, nil, nil)
+	if err != nil && apierrors.IsNotFound(err) {
+		log.V(4).Infof("cluster autoscaler is not enabled for cluster %s", clusterName)
+		return nil
+	}
+	if err != nil {
+		return errors.Wrapf(err, "unable to get autoscaler deployment from management cluster")
+	}
+
+	newAutoscalerImage, err := tkgBomClient.GetAutoscalerImageForK8sVersion(k8sVersion)
+	if err != nil {
+		return err
+	}
+
+	log.Infof("Patching autoscaler deployment '%s'", autoscalerDeploymentName)
+	patchString := `[
+		{
+			"op": "replace",
+			"path": "/spec/template/spec/containers/0/image",
+			"value": "%s"
+		}
+	]`
+
+	autoscalerDeploymentPatch := fmt.Sprintf(patchString, newAutoscalerImage)
+
+	pollOptions := &PollOptions{Interval: upgradePatchInterval, Timeout: upgradePatchTimeout}
+	err = c.PatchResource(&autoScalerDeployment, autoscalerDeploymentName, namespace, autoscalerDeploymentPatch, types.JSONPatchType, pollOptions)
+	if err != nil {
+		return errors.Wrap(err, "unable to update the container image for autoscaler deployment")
+	}
+
+	log.Infof("Waiting for cluster autoscaler to be patched and available...")
+	if err = c.WaitForAutoscalerDeployment(autoscalerDeploymentName, namespace); err != nil {
+		log.Warningf("Unable to wait for autoscaler deployment to be ready. reason: %v", err)
+	}
+	return nil
+}
+
 func (c *client) WaitForAVIResourceCleanUp(statefulSetName, namespace string) error {
 	err := c.GetResource(&appsv1.StatefulSet{}, statefulSetName, namespace, VerifyAVIResourceCleanupFinished, &PollOptions{Interval: CheckResourceInterval, Timeout: AVIResourceCleanupTimeout})
 	// retry once when network condition is poor
@@ -706,6 +789,9 @@ func verifyKubernetesUpgradeForWorkerNodes(clusterStatusInfo *ClusterStatusInfo,
 	}
 
 	var desiredReplica int32 = 1
+	if config.IsFeatureActivated(constants.FeatureFlagSingleNodeClusters) && len(clusterStatusInfo.WorkerMachineObjects) == 0 {
+		return nil
+	}
 	errList := []error{}
 
 	for i := range clusterStatusInfo.MDObjects {
@@ -962,12 +1048,16 @@ func (c *client) GetClusterStatusInfo(clusterName, namespace string, workloadClu
 		errList = append(errList, err)
 	}
 
-	if clusterStatusInfo.MDObjects, err = c.GetMDObjectForCluster(clusterName, namespace); err != nil {
+	if clusterStatusInfo.CPMachineObjects, clusterStatusInfo.WorkerMachineObjects, err = c.GetMachineObjectsForCluster(clusterName, namespace); err != nil {
 		errList = append(errList, err)
 	}
 
-	if clusterStatusInfo.CPMachineObjects, clusterStatusInfo.WorkerMachineObjects, err = c.GetMachineObjectsForCluster(clusterName, namespace); err != nil {
-		errList = append(errList, err)
+	singleNodeCluster := len(clusterStatusInfo.CPMachineObjects) == 1 && len(clusterStatusInfo.WorkerMachineObjects) == 0
+
+	if !singleNodeCluster {
+		if clusterStatusInfo.MDObjects, err = c.GetMDObjectForCluster(clusterName, namespace); err != nil {
+			errList = append(errList, err)
+		}
 	}
 
 	clusterStatusInfo.RetrievalError = kerrors.NewAggregate(errList)
@@ -984,6 +1074,14 @@ func (c *client) GetKCPObjectForCluster(clusterName, namespace string) (*control
 		return nil, errors.Errorf("zero or multiple KCP objects found for the given cluster, %v %v %v", len(kcpList.Items), clusterName, namespace)
 	}
 	return &kcpList.Items[0], nil
+}
+
+func (c *client) GetDeployment(deploymentName string, namespace string) (appsv1.Deployment, error) {
+	dpObject := &appsv1.Deployment{}
+	if err := c.GetResource(dpObject, deploymentName, namespace, nil, nil); err != nil {
+		return appsv1.Deployment{}, err
+	}
+	return *dpObject, nil
 }
 
 func (c *client) GetMDObjectForCluster(clusterName, namespace string) ([]capi.MachineDeployment, error) {
@@ -1131,8 +1229,8 @@ func (c *client) GetBomConfigMap(tkrNameLabel string) (corev1.ConfigMap, error) 
 	return cmList.Items[0], nil
 }
 
-// GetClusterInfrastructure gets the underlying infrastructure being used
-func (c *client) GetClusterInfrastructure() (string, error) {
+// getManagementCluster searches the cluster list for the one with management cluster role label
+func (c *client) getManagementCluster() (*capi.Cluster, error) {
 	clusters := &capi.ClusterList{}
 
 	selectors := []crtclient.ListOption{
@@ -1140,10 +1238,51 @@ func (c *client) GetClusterInfrastructure() (string, error) {
 	}
 	err := c.clientSet.List(context.Background(), clusters, selectors...)
 	if err != nil || len(clusters.Items) != 1 {
-		return "", errors.Wrap(err, "unable to get current management cluster")
+		return nil, errors.Wrap(err, "unable to get current management cluster")
 	}
+	return &clusters.Items[0], nil
+}
 
-	return clusters.Items[0].Spec.InfrastructureRef.Kind, nil
+// GetClusterInfrastructure gets the underlying infrastructure being used
+func (c *client) GetClusterInfrastructure() (string, error) {
+	cluster, err := c.getManagementCluster()
+	if err != nil {
+		return "", err
+	}
+	return cluster.Spec.InfrastructureRef.Kind, nil
+}
+
+// GetClusterResolvedTanzuKubernetesRelease gets the resolved TKR for the management cluster
+func (c *client) GetClusterResolvedTanzuKubernetesRelease() (*v1alpha3.TanzuKubernetesRelease, error) {
+	cluster, err := c.getManagementCluster()
+	if cluster == nil || err != nil {
+		return nil, err
+	}
+	tkrName, exists := cluster.Labels[runv1alpha3.LabelTKR]
+	if cluster.Labels == nil || !exists {
+		return nil, nil // the cluster doesn't have resolved TKR
+	}
+	var tkr v1alpha3.TanzuKubernetesRelease
+	if err := c.GetResource(&tkr, tkrName, "", nil, nil); err != nil {
+		return nil, err
+	}
+	return &tkr, nil
+}
+
+// GetClusterResolvedOSImagesFromTKR get a list of OSImage resource from the resolved TKR
+func (c *client) GetClusterResolvedOSImagesFromTKR(tkr *runv1alpha3.TanzuKubernetesRelease) ([]*runv1alpha3.OSImage, error) {
+	if tkr == nil {
+		return []*v1alpha3.OSImage{}, nil
+	}
+	var osImageList []*v1alpha3.OSImage
+	for _, osImageRef := range tkr.Spec.OSImages {
+		var osImage runv1alpha3.OSImage
+		if err := c.GetResource(&osImage, osImageRef.Name, "", nil, nil); err != nil {
+			return nil, errors.New("unable to get resolved OSImage " + osImage.Name)
+		}
+		osImageList = append(osImageList, &osImage)
+	}
+	return osImageList, nil
 }
 
 // DeactivateTanzuKubernetesReleases deactivates the given TanzuKubernetesReleases
@@ -1274,7 +1413,15 @@ func removeAppliedFile(f *os.File) {
 	}
 }
 
-func (c *client) kubectlApplyFile(url string) error {
+// ApplyFileOptions configures a kubectl apply, whether it is recursive or not
+type ApplyFileOptions struct {
+	url       string
+	recursive bool
+	namespace string
+}
+
+// kubectlApplyFileImpl applies the given url for kubectl apply
+func (c *client) kubectlApplyFileImpl(o ApplyFileOptions) error {
 	args := []string{"apply"}
 	if c.kubeConfigPath != "" {
 		args = append(args, "--kubeconfig", c.kubeConfigPath)
@@ -1283,24 +1430,38 @@ func (c *client) kubectlApplyFile(url string) error {
 	if c.currentContext != "" {
 		args = append(args, "--context", c.currentContext)
 	}
-
-	args = append(args, "-f", url)
+	if o.recursive {
+		args = append(args, "--recursive")
+	}
+	if o.namespace != "" {
+		args = append(args, "--namespace", o.namespace)
+	}
+	args = append(args, "-f", o.url)
 	cmd := exec.Command("kubectl", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return errors.Wrapf(err, "kubectl apply failed, output: %s", string(out))
 	}
-
 	return nil
 }
 
-func (c *client) kubectlApply(yamlStr string) error {
+// kubectlApplyFile applies the given url with kubectl non-recursively
+func (c *client) kubectlApplyFile(url string) error {
+	return c.kubectlApplyFileImpl(ApplyFileOptions{url: url})
+}
+
+// kubectlApplyFileRecursively applies the given url with kubectl recursively
+func (c *client) kubectlApplyFileRecursively(url, namespace string) error {
+	return c.kubectlApplyFileImpl(ApplyFileOptions{url: url, recursive: true, namespace: namespace})
+}
+
+func (c *client) kubectlApply(yaml string) error {
 	f, err := os.CreateTemp("", "kubeapply-")
 	if err != nil {
 		return errors.Wrap(err, "unable to create temp file")
 	}
 	defer removeAppliedFile(f)
-	err = os.WriteFile(f.Name(), []byte(yamlStr), constants.ConfigFilePermissions)
+	err = os.WriteFile(f.Name(), []byte(yaml), constants.ConfigFilePermissions)
 	if err != nil {
 		return errors.Wrap(err, "unable to write temp file")
 	}
@@ -2088,6 +2249,10 @@ func (c *client) PatchKappControllerLastAppliedAnnotation(namespace string) erro
 		return errors.Wrap(err, "failed to get kapp-controller deployment from cluster")
 	}
 	kappYaml := result.([]byte)
+	// Skip adding last-applied annotation if already has it
+	if strings.Contains(string(kappYaml), kubectlApplyLastAppliedAnnotation) {
+		return nil
+	}
 
 	f, err := os.CreateTemp("", "kubeapply-")
 	if err != nil {
@@ -2286,17 +2451,17 @@ func (c *client) DeleteExistingKappController() error {
 // UpdateAWSCNIIngressRules updates the cniIngressRules field for AWSCluster to allow for
 // kapp-controller host port that was added in newer versions.
 func (c *client) UpdateAWSCNIIngressRules(clusterName, clusterNamespace string) error {
-	awsCluster := &capav1beta1.AWSCluster{}
+	awsCluster := &capav1beta2.AWSCluster{}
 	if err := c.GetResource(awsCluster, clusterName, clusterNamespace, nil, nil); err != nil {
 		return err
 	}
 
 	if awsCluster.Spec.NetworkSpec.CNI == nil {
-		awsCluster.Spec.NetworkSpec.CNI = &capav1beta1.CNISpec{}
+		awsCluster.Spec.NetworkSpec.CNI = &capav1beta2.CNISpec{}
 	}
 
 	if awsCluster.Spec.NetworkSpec.CNI.CNIIngressRules == nil {
-		awsCluster.Spec.NetworkSpec.CNI.CNIIngressRules = capav1beta1.CNIIngressRules{}
+		awsCluster.Spec.NetworkSpec.CNI.CNIIngressRules = capav1beta2.CNIIngressRules{}
 	}
 
 	cniIngressRules := awsCluster.Spec.NetworkSpec.CNI.CNIIngressRules
@@ -2306,7 +2471,7 @@ func (c *client) UpdateAWSCNIIngressRules(clusterName, clusterNamespace string) 
 			continue
 		}
 
-		if ingressRule.Protocol != capav1beta1.SecurityGroupProtocolTCP {
+		if ingressRule.Protocol != capav1beta2.SecurityGroupProtocolTCP {
 			continue
 		}
 
@@ -2317,9 +2482,9 @@ func (c *client) UpdateAWSCNIIngressRules(clusterName, clusterNamespace string) 
 		return nil
 	}
 
-	cniIngressRules = append(cniIngressRules, capav1beta1.CNIIngressRule{
+	cniIngressRules = append(cniIngressRules, capav1beta2.CNIIngressRule{
 		Description: "kapp-controller",
-		Protocol:    capav1beta1.SecurityGroupProtocolTCP,
+		Protocol:    capav1beta2.SecurityGroupProtocolTCP,
 		FromPort:    DefaultKappControllerHostPort,
 		ToPort:      DefaultKappControllerHostPort,
 	})

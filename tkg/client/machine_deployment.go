@@ -17,7 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	aws "sigs.k8s.io/cluster-api-provider-aws/api/v1beta1"
+	aws "sigs.k8s.io/cluster-api-provider-aws/api/v1beta2"
 	azure "sigs.k8s.io/cluster-api-provider-azure/api/v1beta1"
 	vsphere "sigs.k8s.io/cluster-api-provider-vsphere/apis/v1beta1"
 	capiv1alpha3 "sigs.k8s.io/cluster-api/api/v1alpha3"
@@ -26,6 +26,7 @@ import (
 	docker "sigs.k8s.io/cluster-api/test/infrastructure/docker/api/v1beta1"
 
 	tkgsv1alpha2 "github.com/vmware-tanzu/tanzu-framework/apis/run/v1alpha2"
+	"github.com/vmware-tanzu/tanzu-framework/util/topology"
 
 	"github.com/vmware-tanzu/tanzu-framework/tkg/clusterclient"
 	"github.com/vmware-tanzu/tanzu-framework/tkg/constants"
@@ -103,12 +104,20 @@ func (c *TkgClient) SetMachineDeployment(options *SetMachineDeploymentOptions) e
 	if err != nil {
 		return errors.Wrap(err, "unable to determine if cluster is clusterclass based")
 	}
+
 	if ccBased {
-		var cluster capi.Cluster
-		if err = clusterClient.GetResource(&cluster, options.ClusterName, options.Namespace, nil, nil); err != nil {
+		cluster := &capi.Cluster{}
+		if err := clusterClient.GetResource(cluster, options.ClusterName, options.Namespace, nil, nil); err != nil {
 			return errors.Wrap(err, "Unable to retrieve cluster resource")
 		}
-		return DoSetMachineDeploymentCC(clusterClient, &cluster, options)
+		skip, err := skipMDCreation(clusterClient, c, cluster, options)
+		if err != nil {
+			return err
+		}
+		if skip {
+			return nil
+		}
+		return DoSetMachineDeploymentCC(clusterClient, cluster, options)
 	}
 
 	isPacific, err := clusterClient.IsPacificRegionalCluster()
@@ -718,7 +727,7 @@ func (c *TkgClient) getClusterClient() (clusterclient.Client, error) {
 		GetClientInterval: 1 * time.Second,
 		GetClientTimeout:  3 * time.Second,
 	}
-	clusterClient, err := clusterclient.NewClient(currentRegion.SourceFilePath, currentRegion.ContextName, clusterclientOptions)
+	clusterClient, err := c.clusterClientFactory.NewClient(currentRegion.SourceFilePath, currentRegion.ContextName, clusterclientOptions)
 	if err != nil {
 		return nil, errors.Wrap(err, "Unable to create clusterclient")
 	}
@@ -761,4 +770,14 @@ func updateAzureSecret(kcTemplate *v1beta1.KubeadmConfigTemplate, machineTemplat
 			}
 		}
 	}
+}
+
+func skipMDCreation(clusterClient clusterclient.Client, c *TkgClient, cluster *capi.Cluster, options *SetMachineDeploymentOptions) (bool, error) {
+	if topology.IsSingleNodeCluster(cluster) && c.IsFeatureActivated(constants.FeatureFlagSingleNodeClusters) {
+		return true, nil
+	} else if topology.HasWorkerNodes(cluster) {
+		return false, errors.New("cluster topology workers are not set. please repair your cluster before trying again")
+	}
+
+	return false, nil
 }

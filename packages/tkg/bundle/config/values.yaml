@@ -78,6 +78,7 @@ tkrSourceControllerPackage:
   versionConstraints:
   tkrSourceControllerPackageValues:
     namespace: tkg-system
+    legacyNamespace: tkr-system
     bomImagePath:
     bomMetadataImagePath:
     tkrRepoImagePath:
@@ -85,6 +86,8 @@ tkrSourceControllerPackage:
     skipVerifyRegistryCert: false
     initialDiscoverFrequency: 60
     continuousDiscoverFrequency: 600
+    caCerts: ""
+    imageRepository: ""
     deployment:
       hostNetwork: false
       nodeSelector: null

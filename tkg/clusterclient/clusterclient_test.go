@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -34,10 +35,11 @@ import (
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/pointer"
-	capav1beta1 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta1"
+	capav1beta2 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta2"
 	capiv1alpha3 "sigs.k8s.io/cluster-api/api/v1alpha3"
 	capi "sigs.k8s.io/cluster-api/api/v1beta1"
 	controlplanev1 "sigs.k8s.io/cluster-api/controlplane/kubeadm/api/v1beta1"
+	capiexp "sigs.k8s.io/cluster-api/exp/api/v1beta1"
 	crtclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake" //nolint:staticcheck,nolintlint
 	"sigs.k8s.io/yaml"
@@ -76,7 +78,8 @@ var imageRepository = "registry.tkg.vmware.new"
 func init() {
 	_ = capi.AddToScheme(scheme)
 	_ = capiv1alpha3.AddToScheme(scheme)
-	_ = capav1beta1.AddToScheme(scheme)
+	_ = capiexp.AddToScheme(scheme)
+	_ = capav1beta2.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = controlplanev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
@@ -123,9 +126,11 @@ type Replicas struct {
 var _ = Describe("Cluster Client", func() {
 	var (
 		clstClient             Client
+		bomClient              *fakes.TKGConfigBomClient
 		currentNamespace       string
 		clientset              *fakes.CRTClusterClient
 		discoveryClient        *fakes.DiscoveryClient
+		featureFlagClient      *fakes.FeatureFlagClient
 		err                    error
 		poller                 *fakes.Poller
 		kubeconfigbytes        []byte
@@ -153,9 +158,11 @@ var _ = Describe("Cluster Client", func() {
 		clientset = &fakes.CRTClusterClient{}
 		discoveryClient = &fakes.DiscoveryClient{}
 		crtClientFactory = &fakes.CrtClientFactory{}
+		bomClient = &fakes.TKGConfigBomClient{}
 		crtClientFactory.NewClientReturns(clientset, nil)
 		discoveryClientFactory = &fakes.DiscoveryClientFactory{}
 		discoveryClientFactory.NewDiscoveryClientForConfigReturns(discoveryClient, nil)
+		featureFlagClient = &fakes.FeatureFlagClient{}
 		poller.PollImmediateWithGetterCalls(func(interval, timeout time.Duration, getterFunc GetterFunc) (interface{}, error) {
 			return getterFunc()
 		})
@@ -527,6 +534,119 @@ var _ = Describe("Cluster Client", func() {
 				Expect(err).NotTo(HaveOccurred())
 			})
 		})
+		Context("Waits for single node cluster initialization", func() {
+			JustBeforeEach(func() {
+				machineObjects = append(machineObjects, getDummyMachine("fake-machine-1", "fake-new-version", true))
+				clientset.GetCalls(func(ctx context.Context, namespace types.NamespacedName, cluster crtclient.Object) error {
+					conditions := capi.Conditions{}
+					conditions = append(conditions, capi.Condition{
+						Type:   capi.InfrastructureReadyCondition,
+						Status: corev1.ConditionTrue,
+					})
+					conditions = append(conditions, capi.Condition{
+						Type:   capi.ControlPlaneReadyCondition,
+						Status: corev1.ConditionTrue,
+					})
+					cluster.(*capi.Cluster).Status.Conditions = conditions
+					cluster.(*capi.Cluster).Spec.Topology = &capi.Topology{
+						Workers: nil,
+						ControlPlane: capi.ControlPlaneTopology{
+							Replicas: pointer.Int32(1),
+						},
+					}
+					return nil
+				})
+				clientset.ListCalls(func(ctx context.Context, o crtclient.ObjectList, opts ...crtclient.ListOption) error {
+					switch o := o.(type) {
+					case *capi.MachineList:
+						o.Items = append(o.Items, machineObjects...)
+					case *capi.MachineDeploymentList:
+						o.Items = []capi.MachineDeployment{}
+					case *controlplanev1.KubeadmControlPlaneList:
+						o.Items = append(o.Items, getDummyKCP(kcpReplicas.SpecReplica, kcpReplicas.Replicas, kcpReplicas.ReadyReplicas, kcpReplicas.UpdatedReplicas))
+					default:
+						return errors.New("invalid object type")
+					}
+					return nil
+				})
+				err = clstClient.WaitForClusterInitialized("fake-clusterName", "fake-namespace")
+			})
+			It("should not return an error", func() {
+				Expect(err).NotTo(HaveOccurred())
+			})
+		})
+	})
+
+	Describe("Wait For Control plane available", func() {
+		BeforeEach(func() {
+			reInitialize()
+			kubeConfigPath := getConfigFilePath("config1.yaml")
+			clstClient, err = NewClient(kubeConfigPath, "", clusterClientOptions)
+			kcp := controlplanev1.KubeadmControlPlane{}
+			kcp.Name = "fake-kcp-name"
+			kcp.Namespace = "fake-kcp-namespace"
+			kcp.Spec.Version = "fake-version"
+			Expect(err).NotTo(HaveOccurred())
+		})
+		Context("When cluster control plane is not initialized", func() {
+			JustBeforeEach(func() {
+				clientset.ListReturns(errors.New("zero or multiple KCP objects found for the given cluster"))
+				err = clstClient.WaitForControlPlaneAvailable("fake-clusterName", "fake-namespace")
+			})
+			It("should return an error", func() {
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("zero or multiple KCP objects found for the given cluster"))
+			})
+		})
+		Context("When cluster control plane is not available", func() {
+			JustBeforeEach(func() {
+				clientset.ListCalls(func(ctx context.Context, o crtclient.ObjectList, opts ...crtclient.ListOption) error {
+					switch o := o.(type) {
+					case *controlplanev1.KubeadmControlPlaneList:
+						kcp := getDummyKCP(3, 0, 1, 1)
+						conditions := capi.Conditions{}
+						conditions = append(conditions, capi.Condition{
+							Type:   controlplanev1.AvailableCondition,
+							Status: corev1.ConditionFalse,
+						})
+						kcp.Status.Conditions = conditions
+						o.Items = append(o.Items, kcp)
+					default:
+						return errors.New("invalid object type")
+					}
+					return nil
+				})
+				err = clstClient.WaitForControlPlaneAvailable("fake-clusterName", "fake-namespace")
+			})
+			It("should return an error", func() {
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("control plane is not available yet"))
+			})
+		})
+		Context("When cluster control plane is available", func() {
+			JustBeforeEach(func() {
+				clientset.ListCalls(func(ctx context.Context, o crtclient.ObjectList, opts ...crtclient.ListOption) error {
+					switch o := o.(type) {
+					case *controlplanev1.KubeadmControlPlaneList:
+						kcp := getDummyKCP(3, 1, 1, 1)
+						conditions := capi.Conditions{}
+						conditions = append(conditions, capi.Condition{
+							Type:   controlplanev1.AvailableCondition,
+							Status: corev1.ConditionTrue,
+						})
+						kcp.Status.Conditions = conditions
+						o.Items = append(o.Items, kcp)
+					default:
+						return errors.New("invalid object type")
+					}
+					return nil
+				})
+				err = clstClient.WaitForControlPlaneAvailable("fake-clusterName", "fake-namespace")
+			})
+			It("should not return an error", func() {
+				Expect(err).NotTo(HaveOccurred())
+			})
+		})
 	})
 
 	Describe("Wait For Cluster Ready", func() {
@@ -785,6 +905,77 @@ var _ = Describe("Cluster Client", func() {
 					return nil
 				})
 				err = clstClient.WaitForClusterReady("fake-clusterName", "fake-namespace", true)
+			})
+			It("should not return an error", func() {
+				Expect(err).NotTo(HaveOccurred())
+			})
+		})
+	})
+
+	Describe("wait For Autoscaler Patch", func() {
+		BeforeEach(func() {
+			reInitialize()
+			kubeConfigPath := getConfigFilePath("config1.yaml")
+			clstClient, err = NewClient(kubeConfigPath, "", clusterClientOptions)
+			Expect(err).NotTo(HaveOccurred())
+		})
+		Context("If autoscaler deployment was not found", func() {
+			JustBeforeEach(func() {
+				clientset.GetReturns(k8serrors.NewNotFound(schema.GroupResource{Group: "apps", Resource: "Deployment"}, "autoscaler"))
+				err = clstClient.ApplyPatchForAutoScalerDeployment(bomClient, "fake-clusterName", "v1.23.8_vmware.1", "default")
+			})
+			It("should not return an error", func() {
+				Expect(err).NotTo(HaveOccurred())
+			})
+		})
+		Context("If autoscaler deployment was found but the new image was not found ", func() {
+			JustBeforeEach(func() {
+				clientset.GetCalls(func(ctx context.Context, namespace types.NamespacedName, cluster crtclient.Object) error {
+					deploy := &appsv1.Deployment{}
+					deploy.Name = "fake-clusterName" + constants.AutoscalerDeploymentNameSuffix
+					return nil
+				})
+				bomClient.GetAutoscalerImageForK8sVersionReturns("", errors.New("autoscaler image was not found"))
+				err = clstClient.ApplyPatchForAutoScalerDeployment(bomClient, "fake-clusterName", "v1.23.8_vmware.1", "default")
+			})
+			It("should return an error", func() {
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("autoscaler image was not found"))
+			})
+		})
+		Context("If autoscaler deployment was found and the new image also was found but patch failed", func() {
+			JustBeforeEach(func() {
+				clientset.GetCalls(func(ctx context.Context, namespace types.NamespacedName, cluster crtclient.Object) error {
+					deploy := &appsv1.Deployment{}
+					deploy.Name = "fake-clusterName" + constants.AutoscalerDeploymentNameSuffix
+					return nil
+				})
+				bomClient.GetAutoscalerImageForK8sVersionReturns("v1.23.0_vmware.1", nil)
+				clientset.PatchReturns(errors.New("patch failed"))
+				err = clstClient.ApplyPatchForAutoScalerDeployment(bomClient, "fake-clusterName", "v1.23.8_vmware.1", "default")
+			})
+			It("should return an error", func() {
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("patch failed"))
+			})
+		})
+		Context("If autoscaler deployment was found and the new image also was found and patch succeed", func() {
+			JustBeforeEach(func() {
+				clientset.GetCalls(func(ctx context.Context, namespace types.NamespacedName, deployment crtclient.Object) error {
+					deploy := deployment.(*appsv1.Deployment)
+					deploy.Name = "fake-clusterName" + constants.AutoscalerDeploymentNameSuffix
+					replicas := int32(1)
+					deploy.Spec.Replicas = &replicas
+					deploy.Status.Replicas = replicas
+					deploy.Status.UpdatedReplicas = replicas
+					deploy.Status.AvailableReplicas = replicas
+					return nil
+				})
+				bomClient.GetAutoscalerImageForK8sVersionReturns("v1.23.0_vmware.1", nil)
+				clientset.PatchCalls(func(ctx context.Context, object crtclient.Object, patch crtclient.Patch, option ...crtclient.PatchOption) error {
+					return nil
+				})
+				err = clstClient.ApplyPatchForAutoScalerDeployment(bomClient, "fake-clusterName", "v1.23.8_vmware.1", "default")
 			})
 			It("should not return an error", func() {
 				Expect(err).NotTo(HaveOccurred())
@@ -1368,6 +1559,7 @@ var _ = Describe("Cluster Client", func() {
 		BeforeEach(func() {
 			reInitialize()
 			kubeConfigPath := getConfigFilePath("config1.yaml")
+
 			clstClient, err = NewClient(kubeConfigPath, "", clusterClientOptions)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1463,6 +1655,33 @@ var _ = Describe("Cluster Client", func() {
 
 		Context("When all replicas are upgraded and all worker machines has new k8s version", func() {
 			It("should not return an error", func() {
+				Expect(err).NotTo(HaveOccurred())
+			})
+		})
+
+		Context("When no replicas of worker machines exists", func() {
+			It("should not return an error", func() {
+				mdReplicas = Replicas{SpecReplica: 0, Replicas: 0, ReadyReplicas: 0, UpdatedReplicas: 0}
+				machineObjects = append(machineObjects, getDummyMachine("fake-machine-1", "fake-new-version", true))
+				clientset.ListCalls(func(ctx context.Context, o crtclient.ObjectList, opts ...crtclient.ListOption) error {
+					switch o := o.(type) {
+					case *capi.MachineList:
+						o.Items = append(o.Items, machineObjects...)
+					case *capi.MachineDeploymentList:
+						o.Items = []capi.MachineDeployment{}
+					case *controlplanev1.KubeadmControlPlaneList:
+						o.Items = append(o.Items, getDummyKCP(kcpReplicas.SpecReplica, kcpReplicas.Replicas, kcpReplicas.ReadyReplicas, kcpReplicas.UpdatedReplicas))
+					default:
+						return errors.New("invalid object type")
+					}
+					return nil
+				})
+				featureFlagClient.IsConfigFeatureActivatedStub = func(featureFlagName string) (bool, error) {
+					if featureFlagName == constants.FeatureFlagSingleNodeClusters {
+						return true, nil
+					}
+					return true, nil
+				}
 				Expect(err).NotTo(HaveOccurred())
 			})
 		})
@@ -2297,15 +2516,15 @@ var _ = Describe("Cluster Client", func() {
 				err = clstClient.UpdateAWSCNIIngressRules("fake-clusterName", "fake-namespace")
 				Expect(err).NotTo(HaveOccurred())
 
-				awsCluster := &capav1beta1.AWSCluster{}
+				awsCluster := &capav1beta2.AWSCluster{}
 				err = clstClient.GetResource(awsCluster, "fake-clusterName", "fake-namespace", nil, nil)
 				Expect(err).NotTo(HaveOccurred())
 
 				ingressRules := awsCluster.Spec.NetworkSpec.CNI.CNIIngressRules
-				expectedIngressRules := capav1beta1.CNIIngressRules{
+				expectedIngressRules := capav1beta2.CNIIngressRules{
 					{
 						Description: "kapp-controller",
-						Protocol:    capav1beta1.SecurityGroupProtocolTCP,
+						Protocol:    capav1beta2.SecurityGroupProtocolTCP,
 						FromPort:    DefaultKappControllerHostPort,
 						ToPort:      DefaultKappControllerHostPort,
 					},
@@ -2316,15 +2535,15 @@ var _ = Describe("Cluster Client", func() {
 
 		Context("When there are existing CNI Ingress Rules", func() {
 			JustBeforeEach(func() {
-				awsCluster := &capav1beta1.AWSCluster{}
+				awsCluster := &capav1beta2.AWSCluster{}
 				err = clstClient.GetResource(awsCluster, "fake-clusterName", "fake-namespace", nil, nil)
 				Expect(err).NotTo(HaveOccurred())
 
-				awsCluster.Spec.NetworkSpec.CNI = &capav1beta1.CNISpec{
-					CNIIngressRules: capav1beta1.CNIIngressRules{
+				awsCluster.Spec.NetworkSpec.CNI = &capav1beta2.CNISpec{
+					CNIIngressRules: capav1beta2.CNIIngressRules{
 						{
 							Description: "antrea-controller",
-							Protocol:    capav1beta1.SecurityGroupProtocolTCP,
+							Protocol:    capav1beta2.SecurityGroupProtocolTCP,
 							FromPort:    10349,
 							ToPort:      10349,
 						},
@@ -2338,21 +2557,21 @@ var _ = Describe("Cluster Client", func() {
 				err = clstClient.UpdateAWSCNIIngressRules("fake-clusterName", "fake-namespace")
 				Expect(err).NotTo(HaveOccurred())
 
-				awsCluster := &capav1beta1.AWSCluster{}
+				awsCluster := &capav1beta2.AWSCluster{}
 				err = clstClient.GetResource(awsCluster, "fake-clusterName", "fake-namespace", nil, nil)
 				Expect(err).NotTo(HaveOccurred())
 
 				ingressRules := awsCluster.Spec.NetworkSpec.CNI.CNIIngressRules
-				expectedIngressRules := capav1beta1.CNIIngressRules{
+				expectedIngressRules := capav1beta2.CNIIngressRules{
 					{
 						Description: "antrea-controller",
-						Protocol:    capav1beta1.SecurityGroupProtocolTCP,
+						Protocol:    capav1beta2.SecurityGroupProtocolTCP,
 						FromPort:    10349,
 						ToPort:      10349,
 					},
 					{
 						Description: "kapp-controller",
-						Protocol:    capav1beta1.SecurityGroupProtocolTCP,
+						Protocol:    capav1beta2.SecurityGroupProtocolTCP,
 						FromPort:    DefaultKappControllerHostPort,
 						ToPort:      DefaultKappControllerHostPort,
 					},
@@ -2363,15 +2582,15 @@ var _ = Describe("Cluster Client", func() {
 
 		Context("When kapp-controller CNI Ingress Rules already exist", func() {
 			JustBeforeEach(func() {
-				awsCluster := &capav1beta1.AWSCluster{}
+				awsCluster := &capav1beta2.AWSCluster{}
 				err = clstClient.GetResource(awsCluster, "fake-clusterName", "fake-namespace", nil, nil)
 				Expect(err).NotTo(HaveOccurred())
 
-				awsCluster.Spec.NetworkSpec.CNI = &capav1beta1.CNISpec{
-					CNIIngressRules: capav1beta1.CNIIngressRules{
+				awsCluster.Spec.NetworkSpec.CNI = &capav1beta2.CNISpec{
+					CNIIngressRules: capav1beta2.CNIIngressRules{
 						{
 							Description: "kapp-controller",
-							Protocol:    capav1beta1.SecurityGroupProtocolTCP,
+							Protocol:    capav1beta2.SecurityGroupProtocolTCP,
 							FromPort:    DefaultKappControllerHostPort,
 							ToPort:      DefaultKappControllerHostPort,
 						},
@@ -2385,15 +2604,15 @@ var _ = Describe("Cluster Client", func() {
 				err = clstClient.UpdateAWSCNIIngressRules("fake-clusterName", "fake-namespace")
 				Expect(err).NotTo(HaveOccurred())
 
-				awsCluster := &capav1beta1.AWSCluster{}
+				awsCluster := &capav1beta2.AWSCluster{}
 				err = clstClient.GetResource(awsCluster, "fake-clusterName", "fake-namespace", nil, nil)
 				Expect(err).NotTo(HaveOccurred())
 
 				ingressRules := awsCluster.Spec.NetworkSpec.CNI.CNIIngressRules
-				expectedIngressRules := capav1beta1.CNIIngressRules{
+				expectedIngressRules := capav1beta2.CNIIngressRules{
 					{
 						Description: "kapp-controller",
-						Protocol:    capav1beta1.SecurityGroupProtocolTCP,
+						Protocol:    capav1beta2.SecurityGroupProtocolTCP,
 						FromPort:    DefaultKappControllerHostPort,
 						ToPort:      DefaultKappControllerHostPort,
 					},

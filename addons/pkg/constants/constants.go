@@ -26,14 +26,28 @@ const (
 	// CalicoAddonName is name of the Calico addon
 	CalicoAddonName = "calico"
 
+	// CalicoDefaultRefName is default refname for Calico addon
+	CalicoDefaultRefName = CalicoAddonName + ".tanzu.vmware.com"
+
 	// CPIAddonName is name of the cloud-provider-vsphere addon
 	CPIAddonName = "vsphere-cpi"
+
+	// CPIDefaultRefName is default refname for cloud-provider-vsphere addon addon
+	CPIDefaultRefName = CPIAddonName + ".tanzu.vmware.com"
 
 	// PVCSIAddonName is name of the vsphere-pv-csi addon
 	PVCSIAddonName = "vsphere-pv-csi"
 
 	// CSIAddonName is name of the vsphere-csi addon
 	CSIAddonName = "vsphere-csi"
+
+	// CSIDefaultRefName is default refname for vsphere-csi addon
+	CSIDefaultRefName = CSIAddonName + ".tanzu.vmware.com"
+
+	// AwsEbsCSIAddonName is name of the aws-ebs-csi addon
+	AwsEbsCSIAddonName = "aws-ebs-csi"
+	// AzureFileCSIAddonName is name of the azurefile-csi addon
+	AzureFileCSIAddonName = "azurefile-csi"
 
 	// TKGBomNamespace is the TKG add on BOM namespace.
 	TKGBomNamespace = "tkr-system"
@@ -163,8 +177,14 @@ const (
 	// AntreaAddonName is the name of Antrea Addon Controller
 	AntreaAddonName = "antrea"
 
+	// AntreaDefaultRefName is default refname for Antrea addon
+	AntreaDefaultRefName = AntreaAddonName + ".tanzu.vmware.com"
+
 	// KappControllerAddonName is the addon name of Kapp Controller
 	KappControllerAddonName = "kapp-controller"
+
+	// KappControllerDefaultRefName is default refname for Kapp Controller addon
+	KappControllerDefaultRefName = KappControllerAddonName + ".tanzu.vmware.com"
 
 	// SecretNameLogKey is the log key for Secrets
 	SecretNameLogKey = "secret-name"
@@ -240,6 +260,9 @@ const (
 	// ClusterPauseLabel is the label on the Cluster Object to indicate the cluster is paused by TKG
 	ClusterPauseLabel = "tkg.tanzu.vmware.com/paused"
 
+	// CustomClusterBootstrap is the annotation in the cluster object to indicate that a custom ClusterBootstrap object will be provided
+	CustomClusterBootstrap = "tkg.tanzu.vmware.com/custom-clusterbootstrap"
+
 	// ManagementClusterRoleLabel is the management cluster role label
 	// It indicates the cluster object represents a mgmt cluster
 	ManagementClusterRoleLabel = "cluster-role.tkg.tanzu.vmware.com/management"
@@ -291,9 +314,15 @@ var (
 	// VSphereCSIConfigKind is the Kind for csi VSphereCSIConfig object
 	VSphereCSIConfigKind = reflect.TypeOf(csiv1alpha1.VSphereCSIConfig{}).Name()
 
+	// AzureFileCSIConfigKind is the Kind for csi AzureFileCSIConfig object
+	AzureFileCSIConfigKind = reflect.TypeOf(csiv1alpha1.AzureFileCSIConfig{}).Name()
+
 	// VSphereCPIConfigKind is the Kind for cpi VSphereCPIConfig object
 	VSphereCPIConfigKind = reflect.TypeOf(cpiv1alpha1.VSphereCPIConfig{}).Name()
 
 	// KappControllerConfigKind is the Kind for KappControllerConfig object
 	KappControllerConfigKind = reflect.TypeOf(runv1alpha3.KappControllerConfig{}).Name()
+
+	// AwsEbsCSIConfigKind is the Kind for csi AwsEbsCSIConfig object
+	AwsEbsCSIConfigKind = reflect.TypeOf(csiv1alpha1.AwsEbsCSIConfig{}).Name()
 )

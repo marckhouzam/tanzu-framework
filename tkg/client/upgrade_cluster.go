@@ -9,11 +9,10 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	capav1beta1 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta1"
+	capav1beta2 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta2"
 	capzv1beta1 "sigs.k8s.io/cluster-api-provider-azure/api/v1beta1"
 	capvv1beta1 "sigs.k8s.io/cluster-api-provider-vsphere/apis/v1beta1"
 	capiv1alpha3 "sigs.k8s.io/cluster-api/api/v1alpha3"
@@ -176,6 +175,8 @@ func (c *TkgClient) UpgradeCluster(options *UpgradeClusterOptions) error {
 	if isClusterClassBased {
 		return c.DoClassyClusterUpgrade(regionalClusterClient, currentClusterClient, options)
 	}
+
+	log.Warning(constants.YTTBasedClusterWarning)
 	return c.DoLegacyClusterUpgrade(regionalClusterClient, currentClusterClient, options)
 }
 
@@ -197,7 +198,7 @@ func (c *TkgClient) DoLegacyClusterUpgrade(regionalClusterClient, currentCluster
 	// We will ensure backward compatibility when shipping packages going forward
 	// With package-package-lcm approach addons will be upgraded as part of management package upgrade
 	// and we do not need to upgrade addons with below function
-	if !options.SkipAddonUpgrade && !config.IsFeatureActivated(config.FeatureFlagPackageBasedLCM) {
+	if !options.SkipAddonUpgrade && !config.IsFeatureActivated(constants.FeatureFlagPackageBasedLCM) {
 		err = c.upgradeAddonPreNodeUpgrade(regionalClusterClient, currentClusterClient, options.ClusterName, options.Namespace, options.IsRegionalCluster, options.Edition)
 		if err != nil {
 			return err
@@ -219,14 +220,14 @@ func (c *TkgClient) DoLegacyClusterUpgrade(regionalClusterClient, currentCluster
 
 	if !options.IsRegionalCluster {
 		// update autoscaler deployment if enabled
-		err = c.applyPatchForAutoScalerDeployment(regionalClusterClient, options)
+		err = regionalClusterClient.ApplyPatchForAutoScalerDeployment(c.tkgBomClient, options.ClusterName, options.KubernetesVersion, options.Namespace)
 		if err != nil {
 			return errors.Wrapf(err, "failed to upgrade autoscaler for cluster '%s'", options.ClusterName)
 		}
 	}
 
 	if options.IsRegionalCluster {
-		if !config.IsFeatureActivated(config.FeatureFlagPackageBasedLCM) {
+		if !config.IsFeatureActivated(constants.FeatureFlagPackageBasedLCM) {
 			log.Info("Waiting for additional components to be up and running...")
 			if err := c.WaitForAddonsDeployments(regionalClusterClient); err != nil {
 				return err
@@ -239,47 +240,6 @@ func (c *TkgClient) DoLegacyClusterUpgrade(regionalClusterClient, currentCluster
 		log.Warningf("Warning: Cluster is upgraded successfully, but some packages are failing. %v", err)
 	}
 
-	return nil
-}
-
-func (c *TkgClient) applyPatchForAutoScalerDeployment(regionalClusterClient clusterclient.Client, options *UpgradeClusterOptions) error {
-	var autoScalerDeployment appsv1.Deployment
-	autoscalerDeploymentName := options.ClusterName + "-cluster-autoscaler"
-	err := regionalClusterClient.GetResource(&autoScalerDeployment, autoscalerDeploymentName, options.Namespace, nil, nil)
-	if err != nil && apierrors.IsNotFound(err) {
-		log.V(4).Infof("cluster autoscaler is not enabled for cluster %s", options.ClusterName)
-		return nil
-	}
-	if err != nil {
-		return errors.Wrapf(err, "unable to get autoscaler deployment from management cluster")
-	}
-
-	newAutoscalerImage, err := c.tkgBomClient.GetAutoscalerImageForK8sVersion(options.KubernetesVersion)
-	if err != nil {
-		return err
-	}
-
-	log.Infof("Patching autoscaler deployment '%s'", autoscalerDeploymentName)
-	patchString := `[
-		{
-			"op": "replace",
-			"path": "/spec/template/spec/containers/0/image",
-			"value": "%s"
-		}
-	]`
-
-	autoscalerDeploymentPatch := fmt.Sprintf(patchString, newAutoscalerImage)
-
-	pollOptions := &clusterclient.PollOptions{Interval: upgradePatchInterval, Timeout: upgradePatchTimeout}
-	err = regionalClusterClient.PatchResource(&autoScalerDeployment, autoscalerDeploymentName, options.Namespace, autoscalerDeploymentPatch, types.JSONPatchType, pollOptions)
-	if err != nil {
-		return errors.Wrap(err, "unable to update the container image for autoscaler deployment")
-	}
-
-	log.Infof("Waiting for cluster autoscaler to be patched and available...")
-	if err = regionalClusterClient.WaitForAutoscalerDeployment(autoscalerDeploymentName, options.Namespace); err != nil {
-		log.Warningf("Unable to wait for autoscaler deployment to be ready. reason: %v", err)
-	}
 	return nil
 }
 
@@ -370,7 +330,6 @@ func (c *TkgClient) upgradeAddonPreNodeUpgrade(regionalClusterClient clusterclie
 			"addons-management/tanzu-addons-manager",
 			"tkr/tkr-controller",
 			"addons-management/core-package-repo",
-			"capabilities/capabilities-controller",
 			"packages/management-package-repo",
 			"packages/management-package")
 	}
@@ -615,7 +574,7 @@ func (c *TkgClient) createInfrastructureTemplateForUpgrade(regionalClusterClient
 	}
 }
 
-func isNewAWSTemplateRequired(machineTemplate *capav1beta1.AWSMachineTemplate, clusterUpgradeConfig *ClusterUpgradeInfo, actualK8sVersion *string) bool {
+func isNewAWSTemplateRequired(machineTemplate *capav1beta2.AWSMachineTemplate, clusterUpgradeConfig *ClusterUpgradeInfo, actualK8sVersion *string) bool {
 	if actualK8sVersion == nil || *actualK8sVersion != clusterUpgradeConfig.UpgradeComponentInfo.KubernetesVersion {
 		return true
 	}
@@ -642,7 +601,7 @@ func isNewDockerTemplateRequired(machineTemplate *capdv1beta1.DockerMachineTempl
 
 func (c *TkgClient) createAWSControlPlaneMachineTemplate(regionalClusterClient clusterclient.Client, kcp *capikubeadmv1beta1.KubeadmControlPlane, clusterUpgradeConfig *ClusterUpgradeInfo) error {
 	var err error
-	awsMachineTemplate := &capav1beta1.AWSMachineTemplate{}
+	awsMachineTemplate := &capav1beta2.AWSMachineTemplate{}
 	err = regionalClusterClient.GetResource(awsMachineTemplate, kcp.Spec.MachineTemplate.InfrastructureRef.Name, kcp.Spec.MachineTemplate.InfrastructureRef.Namespace, nil, nil)
 	if err != nil {
 		return errors.Wrapf(err, "unable to find AWSMachineTemplate with name '%s' in namespace '%s'", kcp.Spec.MachineTemplate.InfrastructureRef.Name, kcp.Spec.MachineTemplate.InfrastructureRef.Namespace)
@@ -658,7 +617,7 @@ func (c *TkgClient) createAWSControlPlaneMachineTemplate(regionalClusterClient c
 		return nil
 	}
 
-	awsMachineTemplateForUpgrade := &capav1beta1.AWSMachineTemplate{}
+	awsMachineTemplateForUpgrade := &capav1beta2.AWSMachineTemplate{}
 	awsMachineTemplateForUpgrade.Name = clusterUpgradeConfig.UpgradeComponentInfo.KCPInfrastructureTemplateName
 	awsMachineTemplateForUpgrade.Namespace = clusterUpgradeConfig.UpgradeComponentInfo.KCPInfrastructureTemplateNamespace
 	awsMachineTemplateForUpgrade.Spec = awsMachineTemplate.DeepCopy().Spec
@@ -677,7 +636,7 @@ func (c *TkgClient) createAWSMachineDeploymentMachineTemplateForWorkers(regional
 
 	for i := range clusterUpgradeConfig.MDObjects {
 		// get aws machine template for given machine deployment
-		awsMachineTemplateForMD := &capav1beta1.AWSMachineTemplate{}
+		awsMachineTemplateForMD := &capav1beta2.AWSMachineTemplate{}
 		err = regionalClusterClient.GetResource(awsMachineTemplateForMD, clusterUpgradeConfig.MDObjects[i].Spec.Template.Spec.InfrastructureRef.Name, clusterUpgradeConfig.MDObjects[i].Namespace, nil, nil)
 		if err != nil {
 			return errors.Wrapf(err, "unable to find AWSMachineTemplate with name '%s' in namespace '%s'", clusterUpgradeConfig.MDObjects[i].Spec.Template.Spec.InfrastructureRef.Name, clusterUpgradeConfig.MDObjects[i].Namespace)
@@ -699,7 +658,7 @@ func (c *TkgClient) createAWSMachineDeploymentMachineTemplateForWorkers(regional
 			MDInfrastructureTemplateNamespace: awsMachineTemplateForMD.Namespace,
 		}
 
-		awsMachineTemplateMDForUpgrade := &capav1beta1.AWSMachineTemplate{}
+		awsMachineTemplateMDForUpgrade := &capav1beta2.AWSMachineTemplate{}
 		awsMachineTemplateMDForUpgrade.Name = clusterUpgradeConfig.UpgradeComponentInfo.MDInfastructureTemplates[clusterUpgradeConfig.MDObjects[i].Name].MDInfrastructureTemplateName
 		awsMachineTemplateMDForUpgrade.Namespace = clusterUpgradeConfig.UpgradeComponentInfo.MDInfastructureTemplates[clusterUpgradeConfig.MDObjects[i].Name].MDInfrastructureTemplateNamespace
 		awsMachineTemplateMDForUpgrade.Spec = awsMachineTemplateForMD.DeepCopy().Spec
@@ -1064,7 +1023,8 @@ func (c *TkgClient) createVsphereInfrastructureTemplateForUpgrade(regionalCluste
 	vcClient, dcName, err := regionalClusterClient.GetVCClientAndDataCenter(
 		clusterUpgradeConfig.ClusterName,
 		clusterUpgradeConfig.ClusterNamespace,
-		kcp.Spec.MachineTemplate.InfrastructureRef.Name)
+		kcp.Spec.MachineTemplate.InfrastructureRef.Name,
+		c.vcClientFactory)
 	if err != nil {
 		return errors.Wrap(err, "unable to create vsphere client")
 	}
@@ -1312,7 +1272,7 @@ func (c *TkgClient) getRegionalClusterNameAndNamespace(clusterClient clusterclie
 }
 
 func (c *TkgClient) getAWSAMIIDForK8sVersion(regionalClusterClient clusterclient.Client, upgradeInfo *ClusterUpgradeInfo) error {
-	awsClusterObject := &capav1beta1.AWSCluster{}
+	awsClusterObject := &capav1beta2.AWSCluster{}
 	if err := regionalClusterClient.GetResource(awsClusterObject, upgradeInfo.ClusterName, upgradeInfo.ClusterNamespace, nil, nil); err != nil {
 		return errors.Wrap(err, "unable to retrieve aws cluster object to retrieve AMI settings")
 	}

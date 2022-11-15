@@ -14,9 +14,10 @@ import (
 	"github.com/go-openapi/swag"
 	"github.com/juju/fslock"
 	"github.com/pkg/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	capav1beta1 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta1"
+	capav1beta2 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta2"
 	capzv1beta1 "sigs.k8s.io/cluster-api-provider-azure/api/v1beta1"
 	capvv1beta1 "sigs.k8s.io/cluster-api-provider-vsphere/apis/v1beta1"
 	capi "sigs.k8s.io/cluster-api/api/v1beta1"
@@ -26,6 +27,7 @@ import (
 	controlplanev1 "sigs.k8s.io/cluster-api/controlplane/kubeadm/api/v1beta1"
 	crtclient "sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/vmware-tanzu/tanzu-framework/apis/run/v1alpha3"
 	"github.com/vmware-tanzu/tanzu-framework/cli/runtime/config"
 	"github.com/vmware-tanzu/tanzu-framework/tkg/clusterclient"
 	"github.com/vmware-tanzu/tanzu-framework/tkg/constants"
@@ -205,8 +207,9 @@ func (c *TkgClient) InitRegion(options *InitRegionOptions) error { //nolint:funl
 	}
 
 	// If clusterclass feature flag is enabled then deploy kapp-controller
-	if config.IsFeatureActivated(config.FeatureFlagPackageBasedLCM) {
-		if err = c.InstallOrUpgradeKappController(bootstrapClusterKubeconfigPath, ""); err != nil {
+	if config.IsFeatureActivated(constants.FeatureFlagPackageBasedLCM) {
+		log.Info("Installing kapp-controller on bootstrap cluster...")
+		if err = c.InstallOrUpgradeKappController(bootstrapClusterKubeconfigPath, "", constants.OperationTypeInstall); err != nil {
 			return errors.Wrap(err, "unable to install kapp-controller to bootstrap cluster")
 		}
 	}
@@ -219,9 +222,16 @@ func (c *TkgClient) InitRegion(options *InitRegionOptions) error { //nolint:funl
 	}
 
 	// If clusterclass feature flag is enabled then deploy management components
-	if config.IsFeatureActivated(config.FeatureFlagPackageBasedLCM) {
+	if config.IsFeatureActivated(constants.FeatureFlagPackageBasedLCM) {
 		if err = c.InstallOrUpgradeManagementComponents(bootstrapClusterKubeconfigPath, "", false); err != nil {
 			return errors.Wrap(err, "unable to install management components to bootstrap cluster")
+		}
+	}
+
+	if options.AdditionalTKGManifests != "" {
+		log.Infof("Apply additional manifests %s for the bootstrap cluster in tkg-system", options.AdditionalTKGManifests)
+		if err = bootStrapClusterClient.ApplyFileRecursively(options.AdditionalTKGManifests, "tkg-system"); err != nil {
+			return errors.Wrap(err, "unable to apply additional manifests")
 		}
 	}
 
@@ -255,9 +265,15 @@ func (c *TkgClient) InitRegion(options *InitRegionOptions) error { //nolint:funl
 	}
 	regionContext = region.RegionContext{ClusterName: options.ClusterName, ContextName: bootstrapClusterContext, SourceFilePath: bootstrapClusterKubeconfigPath, Status: region.Failed}
 
-	kubeConfigBytes, err := c.WaitForClusterInitializedAndGetKubeConfig(bootStrapClusterClient, options.ClusterName, targetClusterNamespace)
+	err = bootStrapClusterClient.WaitForControlPlaneAvailable(options.ClusterName, targetClusterNamespace)
 	if err != nil {
-		return errors.Wrap(err, "unable to wait for cluster and get the cluster kubeconfig")
+		return errors.Wrap(err, "unable to wait for cluster control plane available")
+	}
+	log.Info("Management cluster control plane is available, means API server is ready to receive requests")
+
+	kubeConfigBytes, err := bootStrapClusterClient.GetKubeConfigForCluster(options.ClusterName, targetClusterNamespace, nil)
+	if err != nil {
+		return errors.Wrapf(err, "unable to extract kube config for cluster %s", options.ClusterName)
 	}
 
 	regionalClusterKubeconfigPath, err := getTKGKubeConfigPath(true)
@@ -294,10 +310,16 @@ func (c *TkgClient) InitRegion(options *InitRegionOptions) error { //nolint:funl
 	}
 
 	// If clusterclass feature flag is enabled then deploy kapp-controller
-	if config.IsFeatureActivated(config.FeatureFlagPackageBasedLCM) {
-		if err = c.InstallOrUpgradeKappController(regionalClusterKubeconfigPath, kubeContext); err != nil {
+	if config.IsFeatureActivated(constants.FeatureFlagPackageBasedLCM) {
+		log.Info("Installing kapp-controller on management cluster...")
+		if err = c.InstallOrUpgradeKappController(regionalClusterKubeconfigPath, kubeContext, constants.OperationTypeInstall); err != nil {
 			return errors.Wrap(err, "unable to install kapp-controller to management cluster")
 		}
+	}
+
+	err = bootStrapClusterClient.WaitForClusterInitialized(options.ClusterName, targetClusterNamespace)
+	if err != nil {
+		return errors.Wrap(err, "error waiting for cluster to be provisioned (this may take a few minutes)")
 	}
 
 	log.SendProgressUpdate(statusRunning, StepInstallProvidersOnRegionalCluster, InitRegionSteps)
@@ -311,7 +333,7 @@ func (c *TkgClient) InitRegion(options *InitRegionOptions) error { //nolint:funl
 	}
 
 	// If clusterclass feature flag is enabled then deploy management components to the cluster
-	if config.IsFeatureActivated(config.FeatureFlagPackageBasedLCM) {
+	if config.IsFeatureActivated(constants.FeatureFlagPackageBasedLCM) {
 		if err = c.InstallOrUpgradeManagementComponents(regionalClusterKubeconfigPath, kubeContext, false); err != nil {
 			return errors.Wrap(err, "unable to install management components to management cluster")
 		}
@@ -331,6 +353,13 @@ func (c *TkgClient) InitRegion(options *InitRegionOptions) error { //nolint:funl
 		waitForCNI:            true,
 	}); err != nil {
 		return errors.Wrap(err, "error waiting for addons to get installed")
+	}
+
+	if options.AdditionalTKGManifests != "" {
+		log.Infof("Apply additional manifests %s for the management cluster in %s", options.AdditionalTKGManifests, defaultTkgNamespace)
+		if err = regionalClusterClient.ApplyFileRecursively(options.AdditionalTKGManifests, defaultTkgNamespace); err != nil {
+			return errors.Wrap(err, "unable to apply additional manifests")
+		}
 	}
 
 	log.SendProgressUpdate(statusRunning, StepMoveClusterAPIObjects, InitRegionSteps)
@@ -375,7 +404,7 @@ func (c *TkgClient) InitRegion(options *InitRegionOptions) error { //nolint:funl
 		}
 	}
 
-	if !config.IsFeatureActivated(config.FeatureFlagPackageBasedLCM) {
+	if !config.IsFeatureActivated(constants.FeatureFlagPackageBasedLCM) {
 		log.Info("Waiting for additional components to be up and running...")
 		if err := c.WaitForAddonsDeployments(regionalClusterClient); err != nil {
 			return err
@@ -385,7 +414,7 @@ func (c *TkgClient) InitRegion(options *InitRegionOptions) error { //nolint:funl
 	// Wait for packages if the feature-flag is disabled
 	// We do not need to wait for packages as we have already installed and waited for all
 	// packages to be deployed during tkg package installation
-	if !config.IsFeatureActivated(config.FeatureFlagPackageBasedLCM) {
+	if !config.IsFeatureActivated(constants.FeatureFlagPackageBasedLCM) {
 		log.Info("Waiting for packages to be up and running...")
 		if err := c.WaitForPackages(regionalClusterClient, regionalClusterClient, options.ClusterName, targetClusterNamespace, true); err != nil {
 			log.Warningf("Warning: Management cluster is created successfully, but some packages are failing. %v", err)
@@ -423,7 +452,7 @@ func (c *TkgClient) PatchClusterInitOperations(regionalClusterClient clusterclie
 		return errors.Wrap(err, "unable to patch optional metadata under labels")
 	}
 
-	if config.IsFeatureActivated(config.FeatureFlagPackageBasedLCM) {
+	if config.IsFeatureActivated(constants.FeatureFlagPackageBasedLCM) {
 		// Patch and remove kapp-controller labels from clusterclass resources
 		err = c.removeKappControllerLabelsFromClusterClassResources(regionalClusterClient)
 		if err != nil {
@@ -441,6 +470,40 @@ func (c *TkgClient) MoveObjects(fromKubeconfigPath, toKubeconfigPath, namespace 
 		Namespace:      namespace,
 	}
 	return c.clusterctlClient.Move(moveOptions)
+}
+
+// CopyNeededTKRAndOSImages moves the resolved TKR and associated OSImage CR for a Cluster resource
+// from namespaceto a target management
+func (c *TkgClient) CopyNeededTKRAndOSImages(fromClusterClient, toClusterClient clusterclient.Client) error {
+	tkr, err := fromClusterClient.GetClusterResolvedTanzuKubernetesRelease()
+	if tkr == nil {
+		return err // error occurs or management cluster does not have resolved TKR
+	}
+	osImages, err := fromClusterClient.GetClusterResolvedOSImagesFromTKR(tkr)
+	if err != nil {
+		return err
+	}
+
+	// copy the solved TKR if not presented in the cleanup cluster
+	var toClusterTKR v1alpha3.TanzuKubernetesRelease
+	if err = toClusterClient.GetResource(&toClusterTKR, tkr.Name, tkr.Namespace, nil, nil); apierrors.IsNotFound(err) {
+		tkr.SetResourceVersion("")
+		if err := toClusterClient.CreateResource(tkr, tkr.Name, tkr.Namespace); err != nil {
+			return err
+		}
+	}
+
+	// copy the solved OSImage(s) if not presented in the cleanup cluster
+	for _, osImage := range osImages {
+		var toClusterOSImage v1alpha3.OSImage
+		if err = toClusterClient.GetResource(&toClusterOSImage, osImage.Name, osImage.Namespace, nil, nil); apierrors.IsNotFound(err) {
+			osImage.SetResourceVersion("")
+			if err := toClusterClient.CreateResource(&osImage, osImage.Name, osImage.Namespace); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (c *TkgClient) ensureKindCluster(kubeconfig string, useExistingCluster bool, backupPath string) (string, error) {
@@ -589,6 +652,7 @@ func (c *TkgClient) configureImageTagsForProviderInstallation() error {
 	configImageTag(constants.ConfigVariableInternalCAPAManagerImageTag, "cluster_api_aws", "capaControllerImage")
 	configImageTag(constants.ConfigVariableInternalCAPVManagerImageTag, "cluster_api_vsphere", "capvControllerImage")
 	configImageTag(constants.ConfigVariableInternalCAPZManagerImageTag, "cluster-api-provider-azure", "capzControllerImage")
+	configImageTag(constants.ConfigVariableInternalCAPOCIManagerImageTag, "cluster-api-provider-oci", "capociControllerImage")
 	configImageTag(constants.ConfigVariableInternalNMIImageTag, "aad-pod-identity", "nmiImage")
 
 	return nil
@@ -791,8 +855,8 @@ func (c *TkgClient) removeKappControllerLabelsFromClusterClassResources(regional
 		capi.GroupVersion.WithKind(constants.KindClusterClass):                          constants.ResourceClusterClass,
 		controlplanev1.GroupVersion.WithKind(constants.KindKubeadmControlPlaneTemplate): constants.ResourceKubeadmControlPlaneTemplate,
 		bootstrapv1.GroupVersion.WithKind(constants.KindKubeadmConfigTemplate):          constants.ResourceKubeadmConfigTemplate,
-		capav1beta1.GroupVersion.WithKind(constants.KindAWSClusterTemplate):             constants.ResourceAWSClusterTemplate,
-		capav1beta1.GroupVersion.WithKind(constants.KindAWSMachineTemplate):             constants.ResourceAWSMachineTemplate,
+		capav1beta2.GroupVersion.WithKind(constants.KindAWSClusterTemplate):             constants.ResourceAWSClusterTemplate,
+		capav1beta2.GroupVersion.WithKind(constants.KindAWSMachineTemplate):             constants.ResourceAWSMachineTemplate,
 		capzv1beta1.GroupVersion.WithKind(constants.KindAzureClusterTemplate):           constants.ResourceAzureClusterTemplate,
 		capzv1beta1.GroupVersion.WithKind(constants.KindAzureMachineTemplate):           constants.ResourceAzureMachineTemplate,
 		capvv1beta1.GroupVersion.WithKind(constants.KindVSphereClusterTemplate):         constants.ResourceVSphereClusterTemplate,

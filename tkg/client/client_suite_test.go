@@ -33,7 +33,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	capav1beta1 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta1"
+	capav1beta2 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta2"
 	capzv1beta1 "sigs.k8s.io/cluster-api-provider-azure/api/v1beta1"
 	capvv1beta1 "sigs.k8s.io/cluster-api-provider-vsphere/apis/v1beta1"
 	capiv1alpha3 "sigs.k8s.io/cluster-api/api/v1alpha3"
@@ -73,7 +73,7 @@ func init() {
 	_ = appsv1.AddToScheme(scheme)
 	_ = controlplanev1.AddToScheme(scheme)
 	_ = tkgsv1alpha2.AddToScheme(scheme)
-	_ = capav1beta1.AddToScheme(scheme)
+	_ = capav1beta2.AddToScheme(scheme)
 	_ = capzv1beta1.AddToScheme(scheme)
 	_ = capvv1beta1.AddToScheme(scheme)
 }
@@ -658,7 +658,7 @@ var _ = Describe("ValidateAWSConfig", func() {
 	JustBeforeEach(func() {
 		tkgClient, cerr := CreateTKGClient(tkgConfigPath, testingDir, bomFile, 2*time.Second)
 		Expect(cerr).ToNot(HaveOccurred())
-		err = tkgClient.ConfigureAndValidateAwsConfig(tkrVersion, false, false, 1, false, false)
+		err = tkgClient.ConfigureAndValidateAwsConfig(tkrVersion, 1, false)
 	})
 
 	Context("When the AWS_REGION is not found from tkg config or environment variable", func() {

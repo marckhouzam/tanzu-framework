@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/pflag"
 	"sigs.k8s.io/cluster-api/cmd/clusterctl/cmd"
 
+	cliconfig "github.com/vmware-tanzu/tanzu-framework/cli/core/pkg/config"
 	"github.com/vmware-tanzu/tanzu-framework/cli/core/pkg/pluginmanager"
 	"github.com/vmware-tanzu/tanzu-framework/cli/runtime/config"
 	"github.com/vmware-tanzu/tanzu-framework/tkg/constants"
@@ -26,6 +27,7 @@ type initRegionOptions struct {
 	dryRun                      bool
 	forceConfigUpdate           bool
 	clusterConfigFile           string
+	additionalTKGManifests      string
 	plan                        string
 	clusterName                 string
 	coreProvider                string
@@ -84,6 +86,7 @@ func init() {
 	createCmd.Flags().BoolVarP(&iro.unattended, "yes", "y", false, "Create management cluster without asking for confirmation")
 
 	createCmd.Flags().BoolVarP(&iro.useExistingCluster, "use-existing-bootstrap-cluster", "e", false, "Use an existing bootstrap cluster to deploy the management cluster")
+
 	createCmd.Flags().DurationVarP(&iro.timeout, "timeout", "t", constants.DefaultLongRunningOperationTimeout, "Time duration to wait for an operation before timeout. Timeout duration in hours(h)/minutes(m)/seconds(s) units or as some combination of them (e.g. 2h, 30m, 2h30m10s)")
 
 	createCmd.Flags().StringVarP(&iro.infrastructureProvider, "infrastructure", "i", "", "Infrastructure to deploy the management cluster on ['aws', 'vsphere', 'azure']")
@@ -135,6 +138,8 @@ func init() {
 	createCmd.Flags().BoolVar(&iro.forceConfigUpdate, "force-config-update", false, "Force an update of all configuration files in ${HOME}/.config/tanzu/tkg/bom and ${HOME}/.tanzu/tkg/compatibility")
 
 	createCmd.Flags().SetNormalizeFunc(aliasNormalizeFunc)
+
+	createCmd.Flags().StringVarP(&iro.additionalTKGManifests, "additional-tkg-system-manifests", "", "", "Additional manifests to be applied to the bootstrap cluster in the tkg-system namespace")
 }
 
 func aliasNormalizeFunc(f *pflag.FlagSet, name string) pflag.NormalizedName {
@@ -145,11 +150,6 @@ func aliasNormalizeFunc(f *pflag.FlagSet, name string) pflag.NormalizedName {
 }
 
 func runInit() error {
-	err := tkgctl.SetCompatibilityFileBasedOnEdition()
-	if err != nil {
-		log.V(3).Infof("%v", err.Error())
-	}
-
 	forceUpdateTKGCompatibilityImage := iro.forceConfigUpdate
 	tkgClient, err := newTKGCtlClient(forceUpdateTKGCompatibilityImage)
 	if err != nil {
@@ -188,6 +188,7 @@ func runInit() error {
 		Timeout:                     iro.timeout,
 		Edition:                     edition,
 		GenerateOnly:                iro.dryRun,
+		AdditionalTKGManifests:      iro.additionalTKGManifests,
 	}
 
 	err = tkgClient.Init(options)
@@ -196,7 +197,7 @@ func runInit() error {
 	}
 
 	// Sync plugins if management-cluster creation is successful
-	if config.IsFeatureActivated(config.FeatureContextAwareCLIForPlugins) {
+	if config.IsFeatureActivated(cliconfig.FeatureContextAwareCLIForPlugins) {
 		server, err := config.GetCurrentServer()
 		if err == nil && server != nil {
 			err = pluginmanager.SyncPlugins(server.Name)

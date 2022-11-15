@@ -19,7 +19,7 @@ import (
 	"k8s.io/client-go/discovery"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
-	capav1beta1 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta1"
+	capav1beta2 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta2"
 	capvv1beta1 "sigs.k8s.io/cluster-api-provider-vsphere/apis/v1beta1"
 	capi "sigs.k8s.io/cluster-api/api/v1beta1"
 	capibootstrapkubeadmv1beta1 "sigs.k8s.io/cluster-api/bootstrap/kubeadm/api/v1beta1"
@@ -312,11 +312,11 @@ var _ = Describe("Unit tests for upgrading legacy cluster", func() {
 			BeforeEach(func() {
 				regionalClusterClient.GetKCPObjectForClusterReturns(getDummyKCP(constants.KindAWSMachineTemplate), nil)
 				regionalClusterClient.GetResourceCalls(func(resourceReference interface{}, resourceName, namespace string, postVerify clusterclient.PostVerifyrFunc, pollOptions *clusterclient.PollOptions) error {
-					clusterObj, ok := resourceReference.(*capav1beta1.AWSCluster)
+					clusterObj, ok := resourceReference.(*capav1beta2.AWSCluster)
 					if !ok {
 						return nil
 					}
-					*clusterObj = capav1beta1.AWSCluster{Spec: capav1beta1.AWSClusterSpec{Region: "us-west-2"}}
+					*clusterObj = capav1beta2.AWSCluster{Spec: capav1beta2.AWSClusterSpec{Region: "us-west-2"}}
 					return nil
 				})
 			})
@@ -338,11 +338,11 @@ var _ = Describe("Unit tests for upgrading legacy cluster", func() {
 						if regionalClusterClient.GetResourceCallCount() == 3 {
 							return errors.New("fake-error")
 						}
-						clusterObj, ok := resourceReference.(*capav1beta1.AWSCluster)
+						clusterObj, ok := resourceReference.(*capav1beta2.AWSCluster)
 						if !ok {
 							return nil
 						}
-						*clusterObj = capav1beta1.AWSCluster{Spec: capav1beta1.AWSClusterSpec{Region: "us-west-2"}}
+						*clusterObj = capav1beta2.AWSCluster{Spec: capav1beta2.AWSClusterSpec{Region: "us-west-2"}}
 						return nil
 					})
 				})
@@ -358,11 +358,11 @@ var _ = Describe("Unit tests for upgrading legacy cluster", func() {
 						if regionalClusterClient.GetResourceCallCount() == 3 {
 							return errors.New("fake-error")
 						}
-						clusterObj, ok := resourceReference.(*capav1beta1.AWSCluster)
+						clusterObj, ok := resourceReference.(*capav1beta2.AWSCluster)
 						if !ok {
 							return nil
 						}
-						*clusterObj = capav1beta1.AWSCluster{Spec: capav1beta1.AWSClusterSpec{Region: "us-west-2"}}
+						*clusterObj = capav1beta2.AWSCluster{Spec: capav1beta2.AWSClusterSpec{Region: "us-west-2"}}
 						return nil
 					})
 				})
@@ -378,11 +378,11 @@ var _ = Describe("Unit tests for upgrading legacy cluster", func() {
 						if regionalClusterClient.GetResourceCallCount() == 4 {
 							return errors.New("fake-error")
 						}
-						clusterObj, ok := resourceReference.(*capav1beta1.AWSCluster)
+						clusterObj, ok := resourceReference.(*capav1beta2.AWSCluster)
 						if !ok {
 							return nil
 						}
-						*clusterObj = capav1beta1.AWSCluster{Spec: capav1beta1.AWSClusterSpec{Region: "us-west-2"}}
+						*clusterObj = capav1beta2.AWSCluster{Spec: capav1beta2.AWSClusterSpec{Region: "us-west-2"}}
 						return nil
 					})
 					regionalClusterClient.CreateResourceReturns(errors.New("fake-error-create-resource"))
@@ -877,6 +877,7 @@ var _ = Describe("Unit tests for clusterclass-based upgrade", func() {
 		currentClusterClient  *fakes.ClusterClient
 		tkgClient             *TkgClient
 		upgradeClusterOptions UpgradeClusterOptions
+		k8sVersionPrefix      string
 	)
 
 	BeforeEach(func() {
@@ -893,6 +894,7 @@ var _ = Describe("Unit tests for clusterclass-based upgrade", func() {
 			IsRegionalCluster: false,
 			SkipAddonUpgrade:  true,
 		}
+		k8sVersionPrefix = "v1.23"
 	})
 
 	JustBeforeEach(func() {
@@ -928,11 +930,24 @@ var _ = Describe("Unit tests for clusterclass-based upgrade", func() {
 			Expect(err.Error()).To(ContainSubstring("error waiting for kubernetes version update for worker nodes: fake-error-worker-upgrade"))
 		})
 	})
+	Context("When failure happens while applyPatch for autoscaler upgrade", func() {
+		BeforeEach(func() {
+			regionalClusterClient.PatchClusterObjectReturns(nil)
+			regionalClusterClient.WaitK8sVersionUpdateForCPNodesReturns(nil)
+			regionalClusterClient.WaitK8sVersionUpdateForWorkerNodesReturns(nil)
+			regionalClusterClient.ApplyPatchForAutoScalerDeploymentReturns(errors.Errorf("autoscaler image not available for kubernetes minor version %s", k8sVersionPrefix))
+		})
+		It("should return an error", func() {
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("autoscaler image not available for kubernetes minor version %s", k8sVersionPrefix))
+		})
+	})
 	Context("When cluster patch is successful and cluster get's upgraded successfully", func() {
 		BeforeEach(func() {
 			regionalClusterClient.PatchClusterObjectReturns(nil)
 			regionalClusterClient.WaitK8sVersionUpdateForCPNodesReturns(nil)
 			regionalClusterClient.WaitK8sVersionUpdateForWorkerNodesReturns(nil)
+			regionalClusterClient.ApplyPatchForAutoScalerDeploymentReturns(nil)
 		})
 		It("should not return an error", func() {
 			Expect(err).NotTo(HaveOccurred())

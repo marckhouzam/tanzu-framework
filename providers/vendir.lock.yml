@@ -2,18 +2,18 @@ apiVersion: vendir.k14s.io/v1alpha1
 directories:
 - contents:
   - git:
-      commitTitle: Add new flags insecure and remoteAuthEnabled (#3152)...
-      sha: 0fa3055c5cddf67f8c23edea420575cb4eb7d5d8
+      commitTitle: Update the cpi 1.23.1's tolerations and affinity (#5332)
+      sha: b04f47f5c009ea4d560ec1e87c204e77818de960
       tags:
-      - v0.10.0-120-g0fa3055c
+      - v0.13.0-dev.2-331-gb04f47f5
     path: .
   path: ytt/vendir/vsphere_cpi/_ytt_lib
 - contents:
   - git:
-      commitTitle: Fix Antrea 1.5.3 parameters (#4966)
-      sha: f0774ead4e7f39dcb83e82444dd7f046d42b2dd6
+      commitTitle: Add calico v3.24.1 (#5431)...
+      sha: 9715f65cb72e03a9a1e24283d95a5251d1225bd1
       tags:
-      - v0.13.0-dev.2-139-gf0774ead
+      - v0.13.0-dev.2-402-g9715f65c
     path: .
   path: ytt/vendir/cni/_ytt_lib
 - contents:

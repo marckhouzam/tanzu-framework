@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -14,6 +15,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -185,6 +187,14 @@ func (r *ClusterBootstrapReconciler) reconcileNormal(cluster *clusterapiv1beta1.
 		return ctrl.Result{}, nil
 	}
 
+	clusterBootstrapHelper := clusterbootstrapclone.NewHelper(
+		r.context, r.Client, r.aggregatedAPIResourcesClient, r.dynamicClient, r.gvrHelper, r.Log)
+
+	if err := clusterBootstrapHelper.AddClusterOwnerRefToExistingProviders(cluster, clusterBootstrap); err != nil {
+		log.Error(err, "could not add cluster as owner to existing providers")
+		return ctrl.Result{}, err
+	}
+
 	// reconcile the proxy settings of the cluster
 	if err := r.reconcileClusterProxyAndNetworkSettings(cluster, log); err != nil {
 		return ctrl.Result{}, err
@@ -251,6 +261,11 @@ func (r *ClusterBootstrapReconciler) createOrPatchResourcesForCorePackages(clust
 			// packages, we return error and let the reconciler retry again.
 			log.Error(err, fmt.Sprintf("unable to create or patch all the required resources for %s on cluster: %s/%s",
 				corePackage.RefName, cluster.Namespace, cluster.Name))
+			if meta.IsNoMatchError(err) {
+				// If the remote cluster does not have the required CRDs, we will requeue the request to try again in 10s.
+				log.Error(err, "reconciler error - required CRDs are not yet installed, requeing request in 10s")
+				return ctrl.Result{RequeueAfter: constants.RequeueAfterDuration}, nil
+			}
 			return ctrl.Result{}, err
 		}
 		// set watches on provider objects in core packages if not already set
@@ -387,6 +402,10 @@ func (r *ClusterBootstrapReconciler) createOrPatchClusterBootstrapFromTemplate(c
 	clusterBootstrapHelper := clusterbootstrapclone.NewHelper(
 		r.context, r.Client, r.aggregatedAPIResourcesClient, r.dynamicClient, r.gvrHelper, r.Log)
 	if clusterBootstrap.UID == "" {
+		if _, ok := cluster.Annotations[constants.CustomClusterBootstrap]; ok {
+			log.Info(fmt.Sprintf("ClusterBootstrap object will not be cloned for cluster %s/%s due to the existence of '%s' annotation", cluster.Namespace, cluster.Name, constants.CustomClusterBootstrap))
+			return nil, nil
+		}
 		// When ClusterBootstrap.UID is empty, that means this is the ClusterBootstrap CR about to be created by clusterbootstrap_controller.
 		// And clusterBootstrap.Status.ResolvedTKR will be updated accordingly.
 		log.Info(fmt.Sprintf("ClusterBootstrap for cluster %s/%s does not exist, creating from template %s/%s",
@@ -439,12 +458,21 @@ func (r *ClusterBootstrapReconciler) patchClusterBootstrapFromTemplate(
 	}
 
 	// No need to update ClusterBootstrap ownerRef
-	// Patch the Spec and update the Resolved TKR
-	updatedClusterBootstrap.Status.ResolvedTKR = tkrName
+	// Patch ClusterBootstrap's Spec
 	if err := patchHelper.Patch(r.context, updatedClusterBootstrap); err != nil {
-		log.Error(err, "failed to updated clusterBootstrap")
+		log.Error(err, "failed to update clusterBootstrap spec")
 		return nil, err
 	}
+
+	// Patch ClusterBootstrap's Resolved TKR
+	// Note that we are separating out spec and status patch calls, as per current behavior of cluster API Patch utility function,
+	// patching of the status of the object can go through even if the object's spec has failed to get patched
+	updatedClusterBootstrap.Status.ResolvedTKR = tkrName
+	if err := patchHelper.Patch(r.context, updatedClusterBootstrap); err != nil {
+		log.Error(err, "failed to update clusterBootstrap status")
+		return nil, err
+	}
+
 	// ensure ownerRef of clusterBootstrap on created secrets and providers, this can only be done after
 	// clusterBootstrap is updated
 	if err := clusterBootstrapHelper.EnsureOwnerRef(updatedClusterBootstrap, secrets, providers); err != nil {
@@ -473,7 +501,7 @@ func (r *ClusterBootstrapReconciler) mergeClusterBootstrapPackagesWithTemplate(
 	//    5. We will keep users' customization on valuesFrom of each package, users are responsible for the correctness of the content they put in will work with the next version.
 	packages := make([]*runtanzuv1alpha3.ClusterBootstrapPackage, 0)
 	if updatedClusterBootstrap.Spec.CNI == nil {
-		log.Info("no CNI package specified in ClusterBootstarp, should not happen. Continue with CNI in ClusterBootstrapTemplate of new TKR")
+		log.Info("no CNI package specified in ClusterBootstrap, should not happen. Continue with CNI in ClusterBootstrapTemplate of new TKR")
 		updatedClusterBootstrap.Spec.CNI = clusterBootstrapTemplate.Spec.CNI.DeepCopy()
 	} else {
 		// We don't allow change to the CNI selection once it starts running, however we allow version bump
@@ -1305,7 +1333,7 @@ func (r *ClusterBootstrapReconciler) reconcileClusterProxyAndNetworkSettings(clu
 	if err != nil {
 		log.Error(err, "unable to fetch cluster HTTPS proxy setting, defaulting to empty")
 	}
-	NoProxy, err := util.ParseClusterVariableInterface(cluster, "proxy", "noProxy")
+	NoProxy, err := util.ParseClusterVariableInterfaceArray(cluster, "proxy", "noProxy")
 	if err != nil {
 		log.Error(err, "unable to fetch cluster no-proxy proxy setting, defaulting to empty")
 	}
@@ -1327,7 +1355,7 @@ func (r *ClusterBootstrapReconciler) reconcileClusterProxyAndNetworkSettings(clu
 
 	cluster.Annotations[addontypes.HTTPProxyConfigAnnotation] = HTTPProxy
 	cluster.Annotations[addontypes.HTTPSProxyConfigAnnotation] = HTTPSProxy
-	cluster.Annotations[addontypes.NoProxyConfigAnnotation] = NoProxy
+	cluster.Annotations[addontypes.NoProxyConfigAnnotation] = strings.Join(NoProxy, ",")
 	cluster.Annotations[addontypes.ProxyCACertConfigAnnotation] = ProxyCACert
 	cluster.Annotations[addontypes.IPFamilyConfigAnnotation] = IPFamily
 	cluster.Annotations[addontypes.SkipTLSVerifyConfigAnnotation] = SkipTLSVerify

@@ -91,7 +91,7 @@ LD_FLAGS += -X 'github.com/vmware-tanzu/tanzu-framework/cli/core/pkg/config.Defa
 endif
 
 ifneq ($(strip $(ENABLE_CONTEXT_AWARE_PLUGIN_DISCOVERY)),)
-LD_FLAGS += -X 'github.com/vmware-tanzu/tanzu-framework/cli/runtime/config.IsContextAwareDiscoveryEnabled=$(ENABLE_CONTEXT_AWARE_PLUGIN_DISCOVERY)'
+LD_FLAGS += -X 'github.com/vmware-tanzu/tanzu-framework/cli/core/pkg/config.IsContextAwareDiscoveryEnabled=$(ENABLE_CONTEXT_AWARE_PLUGIN_DISCOVERY)'
 endif
 ifneq ($(strip $(DEFAULT_STANDALONE_DISCOVERY_IMAGE_PATH)),)
 LD_FLAGS += -X 'github.com/vmware-tanzu/tanzu-framework/cli/core/pkg/config.DefaultStandaloneDiscoveryImagePath=$(DEFAULT_STANDALONE_DISCOVERY_IMAGE_PATH)'
@@ -157,6 +157,48 @@ release-%: ## Create release for a platform
 	$(eval OS = $(word 1,$(subst -, ,$*)))
 
 	$(MAKE) build-tanzu-core-cli-oci-$(OS)-$(ARCH)
+
+## --------------------------------------
+## OS Packages
+## --------------------------------------
+.PHONY: apt-package
+apt-package: ## Build a debian package to use with APT
+	@if [ "$$(command -v docker)" == "" ]; then \
+		echo "Docker required to build apt package" ;\
+		exit 1 ;\
+	fi
+
+	@# To call this target, the VERSION variable must be set by the caller.  The version must match an existing release
+	@# of the tanzu CLI on Github. E.g., VERSION=v0.26.0 make apt-package
+	docker run --rm -e VERSION=$${VERSION} -v $(ROOT_DIR):$(ROOT_DIR) ubuntu $(MODULE_ROOT_DIR)/hack/apt/build_package.sh
+
+.PHONY: rpm-package
+rpm-package: ## Build an RPM package
+	@if [ "$$(command -v docker)" == "" ]; then \
+		echo "Docker required to build rpm package" ;\
+		exit 1 ;\
+	fi
+
+	@# To call this target, the VERSION variable must be set by the caller.  The version must match an existing release
+	@# of the tanzu CLI on Github. E.g., VERSION=v0.26.0 make rpm-package
+	docker run --rm -e VERSION=$${VERSION} -v $(ROOT_DIR):$(ROOT_DIR) fedora $(MODULE_ROOT_DIR)/hack/rpm/build_package.sh
+
+.PHONY: choco-package
+choco-package: ## Build a Chocolatey package
+	@if [ "$$(command -v docker)" = "" ]; then \
+		echo "Docker required to build chocolatey package" ;\
+		exit 1 ;\
+	fi
+
+	@# There are only AMD64 images to run chocolatey on docker
+	@if [ "$(GOHOSTARCH)" != "amd64" ]; then \
+		echo "Can only build chocolatey package on an amd64 machine at the moment" ;\
+		exit 1 ;\
+	fi
+
+	@# To call this target, the VERSION variable must be set by the caller.  The version must match an existing release
+	@# of the tanzu CLI on Github. E.g., VERSION=v0.26.0 make choco-package
+	docker run --rm -e VERSION=$${VERSION} -v $(ROOT_DIR):$(ROOT_DIR) chocolatey/choco $(MODULE_ROOT_DIR)/hack/choco/build_package.sh
 
 ## --------------------------------------
 ## Testing

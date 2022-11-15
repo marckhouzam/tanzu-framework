@@ -175,6 +175,13 @@ func E2ECommonCCSpec(ctx context.Context, inputGetter func() E2ECommonCCSpecInpu
 		tkrVersionsSet, oldTKR, defaultTKR = getAvailableTKRs(ctx, mngProxy, input.E2EConfig.TkgConfigDir)
 
 		if input.IsCustomCB {
+			// in case of customCB, a new configuration should be generated
+			// Due to current CB limitation. enable sc will generate a new CB which overwrite below kubectl applied one,
+			// need antrea config guru polish current e2e to support sc
+			options.OtherConfigs = map[string]string{
+				"ENABLE_DEFAULT_STORAGE_CLASS": "false",
+			}
+			clusterConfigFile, err = framework.GetTempClusterConfigFile(input.E2EConfig.TkgClusterConfigPath, &options)
 			err = exec.KubectlApplyWithArgs(ctx, mngKubeConfigFile, getCustomCBResourceFile(clusterName, namespace, defaultTKR.Name))
 			Expect(err).To(BeNil())
 		}
@@ -260,8 +267,8 @@ func E2ECommonCCSpec(ctx context.Context, inputGetter func() E2ECommonCCSpecInpu
 }
 
 // getCustomCBResourceFile return a manifest containing custom ClusterBootstrap and AntreaConfig
-func getCustomCBResourceFile(clusterName, namespace, tkrName string) []byte {
-	return []byte(fmt.Sprintf(customAntreaConfigAndCBResource, clusterName, namespace, tkrName, clusterName, namespace, clusterName))
+func getCustomCBResourceFile(clusterName, namespace string, tkrName string) []byte {
+	return []byte(fmt.Sprintf(customAntreaConfigAndCBResource, clusterName, namespace, "kube-system", clusterName, namespace, tkrName, clusterName, namespace, clusterName, clusterName))
 }
 
 func getAvailableTKRs(ctx context.Context, mcProxy *framework.ClusterProxy, tkgConfigDir string) (sets.StringSet, *runv1alpha3.TanzuKubernetesRelease, *runv1alpha3.TanzuKubernetesRelease) {

@@ -91,6 +91,7 @@ const (
 	InfrastructureProviderAWS     = "aws"
 	InfrastructureProviderAzure   = "azure"
 	InfrastructureProviderDocker  = "docker"
+	InfrastructureProviderOCI     = "oci"
 )
 
 var InfrastructureProviders = map[string]bool{
@@ -99,6 +100,7 @@ var InfrastructureProviders = map[string]bool{
 	InfrastructureProviderAWS:     true,
 	InfrastructureProviderAzure:   true,
 	InfrastructureProviderDocker:  true,
+	InfrastructureProviderOCI:     true,
 }
 
 const (
@@ -110,6 +112,8 @@ const (
 	InfrastructureRefAzure = "AzureCluster"
 	// InfrastructureRefDocker is the docker infrastructure
 	InfrastructureRefDocker = "DockerCluster"
+	// InfrastructureRefOCI is the Oracle Cloud infrastructure
+	InfrastructureRefOCI = "OCICluster"
 )
 
 // networking constants
@@ -188,4 +192,11 @@ const (
 	ResourceAzureMachineTemplate        = "azuremachinetemplates"
 	ResourceVSphereClusterTemplate      = "vsphereclustertemplates"
 	ResourceVSphereMachineTemplate      = "vspheremachinetemplates"
+)
+
+type OperationType int
+
+const (
+	OperationTypeInstall OperationType = iota
+	OperationTypeUpgrade
 )

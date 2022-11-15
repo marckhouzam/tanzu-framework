@@ -23,7 +23,6 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	capi "sigs.k8s.io/cluster-api/api/v1alpha3"
 
-	"github.com/vmware-tanzu/tanzu-framework/cli/runtime/config"
 	"github.com/vmware-tanzu/tanzu-framework/tkg/constants"
 	"github.com/vmware-tanzu/tanzu-framework/tkg/log"
 	"github.com/vmware-tanzu/tanzu-framework/tkg/utils"
@@ -377,16 +376,12 @@ func (c *TkgClient) getDefaultMachineCountForMC(plan string) (int, int) {
 	controlPlaneMachineCount = constants.DefaultDevControlPlaneMachineCount
 	workerMachineCount = constants.DefaultDevWorkerMachineCount
 
-	switch plan {
-	case constants.PlanDev:
-		// use the defaults already set above
-	case constants.PlanProd:
+	if IsProdPlan(plan) {
 		// update controlplane count for prod plan
 		controlPlaneMachineCount = constants.DefaultProdControlPlaneMachineCount
 		workerMachineCount = constants.DefaultProdWorkerMachineCount
-	default:
-		// do nothing. If config overrides are provided, they'll get overridden in the calling function
 	}
+
 	return controlPlaneMachineCount, workerMachineCount
 }
 
@@ -431,10 +426,14 @@ func getCCPlanFromLegacyPlan(plan string) (string, error) {
 	return "", errors.Errorf("unknown plan '%v'", plan)
 }
 
+func IsProdPlan(plan string) bool {
+	return plan == constants.PlanProd || plan == constants.PlanProdCC
+}
+
 // Sets the appropriate CAPI ClusterTopology configuration unless it has been explicitly overridden
 func (c *TkgClient) ensureClusterTopologyConfiguration() {
 	clusterTopologyValueToSet := trueStr
-	if !c.IsFeatureActivated(config.FeatureFlagPackageBasedLCM) {
+	if !c.IsFeatureActivated(constants.FeatureFlagPackageBasedLCM) {
 		value, err := c.TKGConfigReaderWriter().Get(constants.ConfigVariableClusterTopology)
 		if err != nil {
 			clusterTopologyValueToSet = falseStr

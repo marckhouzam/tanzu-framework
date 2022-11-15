@@ -1,6 +1,7 @@
 // Copyright 2021 VMware, Inc. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+// Package command provides commands
 package command
 
 import (
@@ -66,7 +67,7 @@ func NewRootCmd() (*cobra.Command, error) {
 	)
 
 	// If the context and target feature is enabled, add the corresponding commands under root.
-	if config.IsFeatureActivated(config.FeatureContextCommand) {
+	if config.IsFeatureActivated(cliconfig.FeatureContextCommand) {
 		RootCmd.AddCommand(
 			contextCmd,
 			k8sCmd,
@@ -91,7 +92,7 @@ func NewRootCmd() (*cobra.Command, error) {
 
 	// If context-aware-cli-for-plugins feature is not enabled
 	// check that all plugins in the core distro are installed or do so.
-	if !config.IsFeatureActivated(config.FeatureContextAwareCLIForPlugins) {
+	if !config.IsFeatureActivated(cliconfig.FeatureContextAwareCLIForPlugins) {
 		plugins, err = checkAndInstallMissingPlugins(plugins)
 		if err != nil {
 			return nil, err
@@ -160,7 +161,7 @@ func getAvailablePlugins() ([]*cliapi.PluginDescriptor, error) {
 	plugins := make([]*cliapi.PluginDescriptor, 0)
 	var err error
 
-	if config.IsFeatureActivated(config.FeatureContextAwareCLIForPlugins) {
+	if config.IsFeatureActivated(cliconfig.FeatureContextAwareCLIForPlugins) {
 		currentServerName := ""
 
 		server, err := config.GetCurrentServer()
@@ -173,14 +174,13 @@ func getAvailablePlugins() ([]*cliapi.PluginDescriptor, error) {
 			return nil, fmt.Errorf("find installed plugins: %w", err)
 		}
 
-		//nolint:gocritic
-		p := append(serverPlugin, standalonePlugins...)
-		for i := range p {
-			plugins = append(plugins, &p[i])
+		allPlugins := serverPlugin
+		allPlugins = append(allPlugins, standalonePlugins...)
+		for i := range allPlugins {
+			plugins = append(plugins, &allPlugins[i])
 		}
 	} else {
 		// TODO: cli.ListPlugins is deprecated: Use pluginmanager.AvailablePluginsFromLocalSource or pluginmanager.AvailablePlugins instead
-		//nolint:staticcheck
 		plugins, err = cli.ListPlugins()
 		if err != nil {
 			return nil, fmt.Errorf("find available plugins: %w", err)
@@ -208,7 +208,6 @@ func checkAndInstallMissingPlugins(plugins []*cliapi.PluginDescriptor) ([]*cliap
 			return nil, err
 		}
 		// TODO: cli.ListPlugins is deprecated: Use pluginmanager.AvailablePluginsFromLocalSource or pluginmanager.AvailablePlugins instead
-		//nolint:staticcheck
 		plugins, err = cli.ListPlugins()
 		if err != nil {
 			return nil, fmt.Errorf("find available plugins: %w", err)

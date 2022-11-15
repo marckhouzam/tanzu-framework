@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	cliconfig "github.com/vmware-tanzu/tanzu-framework/cli/core/pkg/config"
 	"github.com/vmware-tanzu/tanzu-framework/cli/core/pkg/pluginmanager"
 	configapi "github.com/vmware-tanzu/tanzu-framework/cli/runtime/apis/config/v1alpha1"
 	"github.com/vmware-tanzu/tanzu-framework/cli/runtime/config"
@@ -74,11 +75,6 @@ func init() {
 }
 
 func runUpgradeRegion(server *configapi.Server) error {
-	err := tkgctl.SetCompatibilityFileBasedOnEdition()
-	if err != nil {
-		log.V(3).Infof("%v", err.Error())
-	}
-
 	forceUpdateTKGCompatibilityImage := false
 	tkgClient, err := newTKGCtlClient(forceUpdateTKGCompatibilityImage)
 	if err != nil {
@@ -107,7 +103,7 @@ func runUpgradeRegion(server *configapi.Server) error {
 	}
 
 	// Sync plugins if management-cluster upgrade is successful
-	if config.IsFeatureActivated(config.FeatureContextAwareCLIForPlugins) {
+	if config.IsFeatureActivated(cliconfig.FeatureContextAwareCLIForPlugins) {
 		err = pluginmanager.SyncPlugins(server.Name)
 		if err != nil {
 			log.Warningf("unable to sync plugins after management cluster upgrade. Please run `tanzu plugin sync` command manually to install/update plugins")
